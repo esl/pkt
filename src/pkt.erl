@@ -790,7 +790,7 @@ parse_ndp_options(<<Type:8, Len:8, Rest/binary>>) ->
 ndp_addr(_, undefined) ->
     <<>>;
 ndp_addr(Type, Value) ->
-    Size = (size(Value) + 7) div 8 - 2,
+    Size = (byte_size(Value) + 2 + 7) div 8,
     <<Type:8, Size:8, Value/binary>>.
 
 %%
