@@ -1,7 +1,21 @@
+%%% Macros ---------------------------------------------------------------------
+
+-define(ETHERHDRLEN, 16).
+-define(IPV4HDRLEN, 20).
+-define(IPV6HDRLEN, 40).
+-define(TCPHDRLEN, 20).
+-define(UDPHDRLEN, 8).
+-define(ICMPHDRLEN, 8).
+-define(ICMPV6HDRLEN, 4).
+-define(GREHDRLEN, 4).
+
 %% From http://en.wikipedia.org/wiki/EtherType
 -define(ETH_P_IP, 16#0800).
 -define(ETH_P_ARP, 16#0806).
 -define(ETH_P_IPV6, 16#86DD).
+-define(ETH_P_802_1Q, 16#8100).
+-define(ETH_P_MPLS_UNI, 16#8847).
+-define(ETH_P_MPLS_MULTI, 16#8848).
 -define(ETH_P_ALL, 16#0300).
 
 -define(ARPHRD_ETHER, 1).
@@ -73,6 +87,12 @@
 -define(IPPROTO_SCTP, 132).
 -define(IPPROTO_RAW, 255).
 
+-define(IPV6_HDR_HOP_BY_HOP, 0).
+-define(IPV6_HDR_ROUTING, 43).
+-define(IPV6_HDR_FRAGMENT, 44).
+-define(IPV6_HDR_DEST_OPTS, 60).
+-define(IPV6_HDR_NO_NEXT_HEADER, 59).
+
 -define(ICMP_ECHOREPLY, 0).
 -define(ICMP_DEST_UNREACH, 3).
 -define(    ICMP_UNREACH_NET, 0).           % bad net
@@ -99,122 +119,169 @@
 -define(ICMP_ADDRESS, 17).
 -define(ICMP_ADDRESSREPLY, 18).
 
--define(ICMP6_DST_UNREACH, 1).
--define(ICMP6_PACKET_TOO_BIG, 2).
--define(ICMP6_TIME_EXCEEDED, 3).
--define(ICMP6_PARAM_PROB, 4).
--define(ICMP6_INFOMSG_MASK, 16#80).         % all informational messages
--define(ICMP6_ECHO_REQUEST, 128).
--define(ICMP6_ECHO_REPLY, 129).
--define(ICMP6_DST_UNREACH_NOROUTE, 0).      % no route to destination
--define(ICMP6_DST_UNREACH_ADMIN, 1).        % communication with destination
--define(ICMP6_DST_UNREACH_BEYONDSCOPE, 2).  % beyond scope of source address
--define(ICMP6_DST_UNREACH_ADDR, 3).         % address unreachable
--define(ICMP6_DST_UNREACH_NOPORT, 4).       % bad port
--define(ICMP6_TIME_EXCEED_TRANSIT, 0).      % Hop Limit == 0 in transit
--define(ICMP6_TIME_EXCEED_REASSEMBLY, 1).   % Reassembly time out
--define(ICMP6_PARAMPROB_HEADER, 0).         % erroneous header field
--define(ICMP6_PARAMPROB_NEXTHEADER, 1).     % unrecognized Next Header
--define(ICMP6_PARAMPROB_OPTION, 2).         % unrecognized IPv6 option
--define(ICMP6_ROUTER_RENUMBERING, 138).
+-define(ICMPV6_DEST_UNREACH, 1).
+-define(ICMPV6_PACKET_TOO_BIG, 2).
+-define(ICMPV6_TIME_EXCEEDED, 3).
+-define(ICMPV6_PARAMETER_PROBLEM, 4).
+-define(ICMPV6_ECHO_REQUEST, 128).
+-define(ICMPV6_ECHO_REPLY, 129).
+
+-define(ICMPV6_NDP_RS, 133).
+-define(ICMPV6_NDP_RA, 134).
+-define(ICMPV6_NDP_NS, 135).
+-define(ICMPV6_NDP_NA, 136).
+-define(ICMPV6_NDP_REDIRECT, 137).
+
+-define(NDP_OPT_SLL, 1).
+-define(NDP_OPT_TLL, 2).
+
+%%% Records --------------------------------------------------------------------
 
 -record(linux_cooked, {
-	packet_type,
-	hrd = ?ARPHRD_ETHER,
-	ll_len = 0,
-	ll_bytes = <<>>,
-	pro = ?ETH_P_IP
-    }).
+          packet_type,
+          hrd = ?ARPHRD_ETHER,
+          ll_len = 0,
+          ll_bytes = <<>>,
+          pro = ?ETH_P_IP
+         }).
 
 -record(null, {
-        family = ?PF_INET
-    }).
+          family = ?PF_INET
+         }).
 
 -record(ether, {
-        dhost = <<0,0,0,0,0,0>>,
-        shost = <<0,0,0,0,0,0>>,
-        type = ?ETH_P_IP,
-        crc = 0
-    }).
+          dhost = <<0,0,0,0,0,0>>,
+          shost = <<0,0,0,0,0,0>>,
+          type = ?ETH_P_IP,
+          crc = 0
+         }).
+
+%% A ether header for PBB needs http://en.wikipedia.org/wiki/IEEE_802.1ah-2008
+%% picture at http://www.carrierethernetstudyguide.org/MEF SG/pages/2transport/studyguide_2-1-1-3.html
+-record(pbb_ether, {
+		  dhost = <<0,0,0,0,0,0>>,
+		  shost = <<0,0,0,0,0,0>>,
+		  type = 16#88A8,
+		  b_tag,         % B-TAG
+		  b_vid = 0      % B-VID, backbone VLAn indicator (12 bit)
+		 }).
+%% A service encapsulation header for PBB
+-record(pbb_service_encap, {
+		  type = 16#88E7,
+		  flags,         % prio, drop eligible indicator (DEI), no customer address (NCA)
+		  i_sid          % Service Instance VLAN ID (24 bit)
+		 }).
+
+-record(ieee802_1q_tag, {
+          pcp = 0,
+          cfi = 0,
+          vid = <<0:12>>,
+          ether_type = ?ETH_P_IP
+         }).
+
+-record(mpls_stack_entry, {
+          label = <<0:20>>,
+          qos = 0,
+          pri = 0,
+          ecn = 0,
+          bottom = 0,
+          ttl = 255
+         }).
+
+-record(mpls_tag, {
+          stack = [#mpls_stack_entry{}] :: [#mpls_stack_entry{}],
+          mode = unicast :: unicast | multicast,
+          ether_type = ?ETH_P_IP
+         }).
 
 -record(arp, {
-        hrd = ?ARPHRD_ETHER,
-        pro = ?ETH_P_IP,
-        hln = 6,
-        pln = 4,
-        op = ?ARPOP_REPLY,
+          hrd = ?ARPHRD_ETHER,
+          pro = ?ETH_P_IP,
+          hln = 6,
+          pln = 4,
+          op = ?ARPOP_REPLY,
 
-        sha = <<0,0,0,0,0,0>>,
-        sip = {127,0,0,1},
+          sha = <<0,0,0,0,0,0>>,
+          sip = <<127,0,0,1>>,
 
-        tha = <<0,0,0,0,0,0>>,
-        tip = {127,0,0,1}
-    }).
+          tha = <<0,0,0,0,0,0>>,
+          tip = <<127,0,0,1>>
+         }).
 
 -record(ipv4, {
-        v = 4, hl = 5, tos = 0, len = 20,
-        id = 0, df = 0, mf = 0,
-        off = 0, ttl = 64, p = ?IPPROTO_TCP, sum = 0,
-        saddr = {127,0,0,1}, daddr = {127,0,0,1},
-        opt = <<>>
-    }).
+          v = 4, hl = 5, dscp = 0, ecn = 0, len = 20,
+          id = 0, df = 0, mf = 0,
+          off = 0, ttl = 64, p = ?IPPROTO_TCP, sum = 0,
+          saddr = <<127,0,0,1>>, daddr = <<127,0,0,1>>,
+          opt = <<>>
+         }).
 
 -record(ipv6, {
-        v = 6, class = 0, flow = 0,
-        len = 40, next = ?IPPROTO_TCP, hop = 0,
-        saddr, daddr
-    }).
+          v = 6, class = 0, flow = 0,
+          len = 40, next = ?IPPROTO_TCP, hop = 0,
+          saddr, daddr
+         }).
+
+%% TODO: introduce separate headers for various IPv6 options
+-record(ipv6_header, {
+          type :: atom(),
+          next :: integer(),
+          content :: binary()
+         }).
 
 -record(tcp, {
-        sport = 0, dport = 0,
-        seqno = 0,
-        ackno = 0,
-        off = 5, cwr = 0, ece = 0, urg = 0, ack = 0,
-        psh = 0, rst = 0, syn = 0, fin = 0, win = 0,
-        sum = 0, urp = 0,
-        opt = <<>>
-    }).
+          sport = 0, dport = 0,
+          seqno = 0,
+          ackno = 0,
+          off = 5, cwr = 0, ece = 0, urg = 0, ack = 0,
+          psh = 0, rst = 0, syn = 0, fin = 0, win = 0,
+          sum = 0, urp = 0,
+          opt = <<>>
+         }).
 
 -record(udp, {
-        sport = 0, dport = 0, ulen = 8, sum = 0
-    }).
+          sport = 0, dport = 0, ulen = 8, sum = 0
+         }).
 
 -record(icmp, {
-        type = ?ICMP_ECHO, code = 0, checksum = 0,
-        id = 0, sequence = 0,
-        gateway = {127,0,0,1},
-        un = <<0:32>>,
-        mtu = 0,
-        pointer = 0,
-        ts_orig = 0, ts_recv = 0, ts_tx = 0
-    }).
+          type = ?ICMP_ECHO, code = 0, checksum = 0,
+          id = 0, sequence = 0,
+          gateway = <<127,0,0,1>>,
+          un = <<0:32>>,
+          mtu = 0,
+          pointer = 0,
+          ts_orig = 0, ts_recv = 0, ts_tx = 0
+         }).
 
--record(icmp6, {
-        type = ?ICMP6_ECHO_REQUEST, code = 0, checksum = 0,
+-record(icmpv6, {
+          type = ?ICMPV6_ECHO_REQUEST, code = 0, checksum = 0
+         }).
 
-        un = <<0:32>>,
-        pptr = 0,
-        mtu = 0,
-        id = 0,
-        seq = 0,
-        maxdelay = 0
-    }).
+-record(ndp_ns, { %% neighbor solicitation
+          tgt_addr = <<0:128>>,
+          sll :: undefined | binary()
+         }).
+
+-record(ndp_na, { %% neighbor advertisement
+          src_addr = <<0:128>>,
+          r = 0, s = 0, o = 0,
+          tll :: undefined | binary()
+         }).
 
 -record(sctp, {
-	sport = 0, dport = 0, vtag = 0, sum = 0,
-	chunks = []
-	}).
+          sport = 0, dport = 0, vtag = 0, sum = 0,
+          chunks = []
+         }).
 -record(sctp_chunk, {
-	type = 0, flags = 0, len = 0, payload = 0
-	}).
+          type = 0, flags = 0, len = 0, payload = 0
+         }).
 -record(sctp_chunk_data, {
-	tsn = 0, sid = 0, ssn = 0, ppi = 0, data
-	}).
-
+          tsn = 0, sid = 0, ssn = 0, ppi = 0, data
+         }).
 
 %% RFC 2784 - Generic Routing Encapsulation (GRE)
 -record(gre, {
-        c = 0, res0 = 0, ver = 0,
-        type = ?ETH_P_IP,
-        chksum = <<>>, res1 = <<>>
-    }).
+          c = 0, res0 = 0, ver = 0,
+          type = ?ETH_P_IP,
+          chksum = <<>>, res1 = <<>>
+         }).

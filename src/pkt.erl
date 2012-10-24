@@ -1,4 +1,4 @@
-%% Copyright (c) 2009-2012, Michael Santos <michael.santos@gmail.com>
+%% Copyright (c) 2009-2010, Michael Santos <michael.santos@gmail.com>
 %% All rights reserved.
 %%
 %% Redistribution and use in source and binary forms, with or without
@@ -32,37 +32,132 @@
 
 -include("pkt.hrl").
 
--define(ETHERHDRLEN, 16).
--define(IPV4HDRLEN, 20).
--define(IPV6HDRLEN, 40).
--define(TCPHDRLEN, 20).
--define(UDPHDRLEN, 8).
--define(ICMPHDRLEN, 8).
--define(ICMP6HDRLEN, 8).
--define(GREHDRLEN, 4).
+-export([
+         encapsulate/1,
+         decapsulate/1,
+         decapsulate_dlt/2
+        ]).
 
 -export([
-        checksum/1,
-        decapsulate/1,
-        decapsulate_dlt/2,
-        makesum/1,
-        valid/1,
-        ether/1,
-        ether_type/1,
-        link_type/1,
-        arp/1,
-        null/1,
-        linux_cooked/1,
-        icmp/1,
-        icmp6/1,
-        ipv4/1,
-        ipv6/1,
-        proto/1,
-        tcp/1,
-        udp/1,
-        sctp/1,
-        dlt/1
-]).
+         checksum/1,
+         makesum/1,
+         valid/1,
+         ether/1,
+         ether_type/1,
+         link_type/1,
+         arp/1,
+         null/1,
+         linux_cooked/1,
+         icmp/1,
+         icmpv6/1,
+         ipv4/1,
+         ipv6/1,
+         ipv6_header/2,
+         proto/1,
+         tcp/1,
+         udp/1,
+         dlt/1
+        ]).
+
+%%% Types ----------------------------------------------------------------------
+
+-type ether_type() :: ipv4 | ipv6 | arp | unsupported.
+-type proto() :: tcp | udp | sctp | icmp | icmpv6 | raw | unsupported.
+-type header() :: #linux_cooked{} |
+                  #null{} |
+                  #ether{} |
+                  #arp{} |
+                  #ieee802_1q_tag{} |
+                  #mpls_tag{} |
+                  #ipv4{} |
+                  #ipv6{} |
+                  #tcp{} |
+                  #udp{} |
+                  #icmp{} |
+                  #icmpv6{} |
+                  #sctp{} |
+                  #ndp_ns{} |
+                  #ndp_na{} |
+                  {unsupported, binary()} |
+                  {truncated, binary()}.
+%% Packet should be a list of headers with
+%% optional binary payload as a last element.
+-type packet() :: [header() | binary()].
+
+-export_type([
+              packet/0
+             ]).
+
+%%% Encapsulate ----------------------------------------------------------------
+
+-spec encapsulate(packet()) -> binary().
+encapsulate(Packet) ->
+    encapsulate(lists:reverse(Packet), <<>>).
+
+-spec encapsulate(packet(), binary()) -> binary().
+encapsulate([], Binary) ->
+    Binary;
+encapsulate([Payload | Packet], <<>>) when is_binary(Payload) ->
+    encapsulate(Packet, << Payload/binary >>);
+encapsulate([#tcp{} = TCP | Packet], Binary) ->
+    {ok, IP} = find_ip(Packet),
+    TCPBinary = tcp(TCP#tcp{sum = makesum([IP, TCP, Binary])}),
+    encapsulate(tcp, Packet, << TCPBinary/binary, Binary/binary >>);
+encapsulate([#udp{} = UDP0 | Packet], Binary) ->
+    {ok, IP} = find_ip(Packet),
+    UDP = UDP0#udp{ulen = 8 + byte_size(Binary)},
+    UDPBinary = udp(UDP#udp{sum = makesum([IP, UDP, Binary])}),
+    encapsulate(udp, Packet, << UDPBinary/binary, Binary/binary >>);
+encapsulate([#sctp{} = SCTP | Packet], Binary) ->
+    SCTPBinary = sctp(SCTP),
+    encapsulate(sctp, Packet, << SCTPBinary/binary, Binary/binary >>);
+encapsulate([#icmp{} = ICMP | Packet], Binary) ->
+    ICMPNoCsumBinary = icmp(ICMP#icmp{checksum = 0}),
+    Checksum = makesum(<<ICMPNoCsumBinary/binary, Binary/binary>>),
+    ICMPBinary = icmp(ICMP#icmp{checksum = Checksum}),
+    encapsulate(icmp, Packet, << ICMPBinary/binary, Binary/binary >>);
+encapsulate([#ndp_ns{} = NDP | Packet], Binary) ->
+    encapsulate(ndp_ns, Packet, << (ndp_ns(NDP))/binary, Binary/binary >>);
+encapsulate([#ndp_na{} = NDP | Packet], Binary) ->
+    encapsulate(ndp_na, Packet, << (ndp_na(NDP))/binary, Binary/binary >>);
+encapsulate([#icmpv6{} = ICMP | Packet], Binary) ->
+    {ok, IP} = find_ip(Packet),
+    ICMPBinary = icmpv6(ICMP#icmpv6{checksum = makesum([IP, ICMP, Binary])}),
+    encapsulate(icmpv6, Packet, << ICMPBinary/binary, Binary/binary >>);
+encapsulate([#arp{} = ARP | Packet], Binary) ->
+    ARPBinary = arp(ARP),
+    encapsulate(arp, Packet, << ARPBinary/binary, Binary/binary >>);
+encapsulate([{unsupported, Unsupported} | Packet], Binary) ->
+    encapsulate(unsupported, Packet, << Unsupported/binary, Binary/binary >>);
+encapsulate([{truncated, Truncated} | Packet], Binary) ->
+    encapsulate(truncated, Packet, << Truncated/binary, Binary/binary >>).
+
+-spec encapsulate(ether_type() | proto(), packet(), binary()) -> binary().
+encapsulate(_, [], Binary) ->
+    encapsulate([], Binary);
+encapsulate(ICMPPayloadType, [#icmpv6{} = ICMP | Packet], Binary) ->
+    encapsulate([fix_icmpv6_type(ICMP, ICMPPayloadType) | Packet], Binary);
+encapsulate(Proto, [#ipv4{} = IPv4 | Packet], Binary) ->
+    IPv4Binary = ipv4(fill_ipv4_hdr(IPv4, Proto, byte_size(Binary))),
+    encapsulate(ipv4, Packet, << IPv4Binary/binary, Binary/binary >>);
+encapsulate(Proto, [#ipv6_header{} = IPv6Header | Packet], Binary) ->
+    Type = IPv6Header#ipv6_header.type,
+    HeaderBinary = ipv6_header(Proto, IPv6Header),
+    encapsulate(Type, Packet, << HeaderBinary/binary, Binary/binary >>);
+encapsulate(Proto, [#ipv6{} = IPv6 | Packet], Binary) ->
+    IPv6Binary = ipv6(fill_ipv6_hdr(IPv6, Proto, byte_size(Binary))),
+    encapsulate(ipv6, Packet, << IPv6Binary/binary, Binary/binary >>);
+encapsulate(EtherType, [#ieee802_1q_tag{} = VlanTag | Packet], Binary) ->
+    TagBinary = ieee802_1q_tag(fill_ether_type(VlanTag, EtherType)),
+    encapsulate(ieee802_1q_tag, Packet, << TagBinary/binary, Binary/binary >>);
+encapsulate(EtherType, [#mpls_tag{mode = Mode} = MPLSTag | Packet], Binary) ->
+    TagBinary = mpls_tag(fill_ether_type(MPLSTag, EtherType)),
+    encapsulate({mpls_tag, Mode}, Packet, << TagBinary/binary, Binary/binary >>);
+encapsulate(EtherType, [#ether{} = Ether | Packet], Binary) ->
+    EtherBinary = ether(fill_ether_type(Ether, EtherType)),
+    encapsulate(ether, Packet, << EtherBinary/binary, Binary/binary >>).
+
+%%% Decapsulate ----------------------------------------------------------------
 
 decapsulate_dlt(Dlt, Data) ->
     decapsulate({link_type(Dlt), Data}, []).
@@ -89,16 +184,36 @@ decapsulate({linux_cooked, Data}, Packet) when byte_size(Data) >= 16 ->
 decapsulate({ether, Data}, Packet) when byte_size(Data) >= ?ETHERHDRLEN ->
     {Hdr, Payload} = ether(Data),
     decapsulate({ether_type(Hdr#ether.type), Payload}, [Hdr|Packet]);
-decapsulate({arp, Data}, Packet) when byte_size(Data) >= 28 -> % IPv4 ARP
+
+decapsulate({ieee802_1q_tag, Data}, Packet) ->
+    {Tag, Payload} = ieee802_1q_tag(Data),
+    EtherType = ether_type(Tag#ieee802_1q_tag.ether_type),
+    decapsulate({EtherType, Payload}, [Tag|Packet]);
+decapsulate({{mpls_tag, Mode}, Data}, Packet) ->
+    {RawTag, Payload} = mpls_tag(Data),
+    Tag = RawTag#mpls_tag{mode = Mode},
+    EtherType = ether_type(Tag#mpls_tag.ether_type),
+    decapsulate({EtherType, Payload}, [Tag|Packet]);
+
+decapsulate({arp, Data}, Packet) when byte_size(Data) >= 28 -> %% IPv4 ARP
     {Hdr, Payload} = arp(Data),
     decapsulate(stop, [Payload, Hdr|Packet]);
-
 decapsulate({ipv4, Data}, Packet) when byte_size(Data) >= ?IPV4HDRLEN ->
     {Hdr, Payload} = ipv4(Data),
     decapsulate({proto(Hdr#ipv4.p), Payload}, [Hdr|Packet]);
 decapsulate({ipv6, Data}, Packet) when byte_size(Data) >= ?IPV6HDRLEN ->
     {Hdr, Payload} = ipv6(Data),
-    decapsulate({proto(Hdr#ipv6.next), Payload}, [Hdr|Packet]);
+    decapsulate({ipv6_proto(Hdr#ipv6.next), Payload}, [Hdr|Packet]);
+
+%% TODO: introduce separate headers for various IPv6 options, parse separately
+decapsulate({IPv6Header, Data}, Packet) when IPv6Header =:= ipv6_hdr_hop_by_hop;
+                                             IPv6Header =:= ipv6_hdr_routing;
+                                             IPv6Header =:= ipv6_hdr_fragments;
+                                             IPv6Header =:= ipv6_hdr_dest_opts;
+                                             IPv6Header =:= ipv6_hdr_no_next ->
+    {Hdr, Payload} = ipv6_header(IPv6Header, Data),
+    decapsulate({ipv6_proto(Hdr#ipv6_header.next), Payload}, [Hdr|Packet]);
+
 %% GRE
 decapsulate({gre, Data}, Packet) when byte_size(Data) >= ?GREHDRLEN ->
     {Hdr, Payload} = gre(Data),
@@ -116,17 +231,33 @@ decapsulate({sctp, Data}, Packet) when byte_size(Data) >= 12 ->
 decapsulate({icmp, Data}, Packet) when byte_size(Data) >= ?ICMPHDRLEN ->
     {Hdr, Payload} = icmp(Data),
     decapsulate(stop, [Payload, Hdr|Packet]);
-decapsulate({icmp6, Data}, Packet) when byte_size(Data) >= ?ICMP6HDRLEN ->
-    {Hdr, Payload} = icmp6(Data),
-    decapsulate(stop, [Payload, Hdr|Packet]);
+decapsulate({icmpv6, Data}, Packet) when byte_size(Data) >= ?ICMPV6HDRLEN ->
+    {Hdr, Payload} = icmpv6(Data),
+    decapsulate({icmpv6_payload_type(Hdr#icmpv6.type), Payload}, [Hdr|Packet]);
+
+decapsulate({ndp_ns, Data}, Packet) ->
+    decapsulate(stop, [ndp_ns(Data)|Packet]);
+decapsulate({ndp_na, Data}, Packet) ->
+    decapsulate(stop, [ndp_na(Data)|Packet]);
+
 decapsulate({_, Data}, Packet) ->
     decapsulate(stop, [{truncated, Data}|Packet]).
-
 
 ether_type(?ETH_P_IP) -> ipv4;
 ether_type(?ETH_P_IPV6) -> ipv6;
 ether_type(?ETH_P_ARP) -> arp;
+ether_type(?ETH_P_802_1Q) -> ieee802_1q_tag;
+ether_type(?ETH_P_MPLS_UNI) -> {mpls_tag, unicast};
+ether_type(?ETH_P_MPLS_MULTI) -> {mpls_tag, multicast};
 ether_type(_) -> unsupported.
+
+ether_type_code(ipv4, _) -> ?ETH_P_IP;
+ether_type_code(ipv6, _) -> ?ETH_P_IPV6;
+ether_type_code(arp, _) -> ?ETH_P_ARP;
+ether_type_code(ieee802_1q_tag, _) -> ?ETH_P_802_1Q;
+ether_type_code({mpls_tag, unicast}, _) -> ?ETH_P_MPLS_UNI;
+ether_type_code({mpls_tag, multicast}, _) -> ?ETH_P_MPLS_MULTI;
+ether_type_code(unsupported, Old) -> Old.
 
 link_type(?DLT_NULL) -> null;
 link_type(?DLT_EN10MB) -> ether;
@@ -137,9 +268,16 @@ family(?PF_INET) -> ipv4;
 family(?PF_INET6) -> ipv6;
 family(_) -> unsupported.
 
+ipv6_proto(?IPV6_HDR_HOP_BY_HOP) -> ipv6_hdr_hop_by_hop;
+ipv6_proto(?IPV6_HDR_ROUTING) -> ipv6_hdr_routing;
+ipv6_proto(?IPV6_HDR_FRAGMENT) -> ipv6_hdr_fragments;
+ipv6_proto(?IPV6_HDR_DEST_OPTS) -> ipv6_hdr_dest_opts;
+ipv6_proto(?IPV6_HDR_NO_NEXT_HEADER) -> ipv6_hdr_no_next;
+ipv6_proto(Proto) -> proto(Proto).
+
 proto(?IPPROTO_IP) -> ip;
 proto(?IPPROTO_ICMP) -> icmp;
-proto(?IPPROTO_ICMPV6) -> icmp6;
+proto(?IPPROTO_ICMPV6) -> icmpv6;
 proto(?IPPROTO_TCP) -> tcp;
 proto(?IPPROTO_UDP) -> udp;
 proto(?IPPROTO_IPV6) -> ipv6;
@@ -148,14 +286,57 @@ proto(?IPPROTO_GRE) -> gre;
 proto(?IPPROTO_RAW) -> raw;
 proto(_) -> unsupported.
 
+ipv6_proto_code(ipv6_hdr_hop_by_hop, _) -> ?IPV6_HDR_HOP_BY_HOP;
+ipv6_proto_code(ipv6_hdr_routing, _) -> ?IPV6_HDR_ROUTING;
+ipv6_proto_code(ipv6_hdr_fragments, _) -> ?IPV6_HDR_FRAGMENT;
+ipv6_proto_code(ipv6_hdr_dest_opts, _) -> ?IPV6_HDR_DEST_OPTS;
+ipv6_proto_code(ipv6_hdr_no_next, _) -> ?IPV6_HDR_NO_NEXT_HEADER;
+ipv6_proto_code(Proto, Old) -> proto_code(Proto, Old).
+
+proto_code(icmp, _) -> ?IPPROTO_ICMP;
+proto_code(icmpv6, _) -> ?IPPROTO_ICMPV6;
+proto_code(tcp, _) -> ?IPPROTO_TCP;
+proto_code(udp, _) -> ?IPPROTO_UDP;
+proto_code(sctp, _) -> ?IPPROTO_SCTP;
+proto_code(raw, _) -> ?IPPROTO_RAW;
+proto_code(unsupported, Old) -> Old.
+
+icmpv6_payload_type(?ICMPV6_NDP_NS) -> ndp_ns;
+icmpv6_payload_type(?ICMPV6_NDP_NA) -> ndp_na;
+icmpv6_payload_type(_) -> unsupported.
+
+fill_ether_type(#ieee802_1q_tag{ether_type = OldType} = Tag, EtherType) ->
+    Tag#ieee802_1q_tag{ether_type = ether_type_code(EtherType, OldType)};
+fill_ether_type(#mpls_tag{ether_type = OldType} = Tag, EtherType) ->
+    Tag#mpls_tag{ether_type = ether_type_code(EtherType, OldType)};
+fill_ether_type(#ether{type = OldType} = Ether, EtherType) ->
+    Ether#ether{type = ether_type_code(EtherType, OldType)}.
+
+fill_ipv4_hdr(#ipv4{opt = Opt} = IPv4, Proto, DataLen) ->
+    HL = 5 + (bit_size(Opt) + 31) div 32,
+    Tmp = IPv4#ipv4{hl = HL,
+                    len = 4 * HL + DataLen,
+                    p = proto_code(Proto, IPv4#ipv4.p)},
+    Tmp#ipv4{sum = pkt:makesum(Tmp)}.
+
+fill_ipv6_hdr(#ipv6{} = IPv6, Proto, Len) ->
+    IPv6#ipv6{len = Len,
+              next = ipv6_proto_code(Proto, IPv6#ipv6.next)}.
+
+fix_icmpv6_type(#icmpv6{} = ICMP, ndp_ns) ->
+    ICMP#icmpv6{type = ?ICMPV6_NDP_NS};
+fix_icmpv6_type(#icmpv6{} = ICMP, ndp_na) ->
+    ICMP#icmpv6{type = ?ICMPV6_NDP_NA};
+fix_icmpv6_type(#icmpv6{} = ICMP, _) ->
+    ICMP.
 
 %%
 %% BSD loopback
 %%
 null(<<Family:4/native-unsigned-integer-unit:8, Payload/binary>>) ->
     {#null{
-            family = Family
-        }, Payload};
+        family = Family
+       }, Payload};
 null(#null{family = Family}) ->
     <<Family:4/native-unsigned-integer-unit:8>>.
 
@@ -168,12 +349,12 @@ linux_cooked(<<Ptype:16/big, Hrd:16/big, Ll_len:16/big,
         packet_type = Ptype, hrd = Hrd,
         ll_len = Ll_len, ll_bytes = Ll_hdr,
         pro = Pro
-      }, Payload};
+       }, Payload};
 linux_cooked(#linux_cooked{
-              packet_type = Ptype, hrd = Hrd,
-              ll_len = Ll_len, ll_bytes = Ll_hdr,
-              pro = Pro
-             }) ->
+                packet_type = Ptype, hrd = Hrd,
+                ll_len = Ll_len, ll_bytes = Ll_hdr,
+                pro = Pro
+               }) ->
     <<Ptype:16/big, Hrd:16/big, Ll_len:16/big,
       Ll_hdr:8/bytes, Pro:16>>.
 
@@ -181,113 +362,175 @@ linux_cooked(#linux_cooked{
 %% Ethernet
 %%
 ether(<<Dhost:6/bytes, Shost:6/bytes, Type:16, Payload/binary>>) ->
-%    Len = byte_size(Packet) - 4,
-%    <<Payload:Len/bytes, CRC:4/bytes>> = Packet,
+    %% Len = byte_size(Packet) - 4,
+    %% <<Payload:Len/bytes, CRC:4/bytes>> = Packet,
     {#ether{
-       dhost = Dhost, shost = Shost,
-       type = Type
-      }, Payload};
+        dhost = Dhost, shost = Shost,
+        type = Type
+       }, Payload};
 ether(#ether{
-       dhost = Dhost, shost = Shost,
-       type = Type
-      }) ->
+         dhost = Dhost, shost = Shost,
+         type = Type
+        }) ->
     <<Dhost:6/bytes, Shost:6/bytes, Type:16>>.
+
+%%
+%% MPLS
+%%
+mpls_tag(#mpls_tag{stack = Stack,
+                   ether_type = EtherType}) ->
+    StackBin = << <<(mpls_stack_entry(SE))/binary>> || SE <- Stack >>,
+    <<(set_bottom_bit(StackBin))/binary, EtherType:16>>;
+mpls_tag(Binary) when is_binary(Binary) ->
+    decode_mpls(Binary, []).
+
+mpls_stack_entry(#mpls_stack_entry{label = Label,
+                                   qos = QOS,
+                                   pri = PRI,
+                                   ecn = ECN,
+                                   ttl = TTL}) ->
+    <<Label/bits, QOS:1, PRI:1, ECN:1, 0:1, TTL:8>>.
+
+set_bottom_bit(MPLSStack) ->
+    StartLen = bit_size(MPLSStack) - 9,
+    <<Start:StartLen/bits, _:1, TTL:8>> = MPLSStack,
+    <<Start:StartLen/bits, 1:1, TTL:8>>.
+
+decode_mpls(<<Label:20, QOS:1, PRI:1, ECN:1, Bottom:1, TTL:8, Rest/binary>>, Acc) ->
+    Entry = #mpls_stack_entry{label = Label,
+                              qos = QOS,
+                              pri = PRI,
+                              ecn = ECN,
+                              ttl = TTL},
+    case Bottom of
+        0 ->
+            decode_mpls(Rest, [Entry|Acc]);
+        1 ->
+            <<EtherType:16, Payload/binary>> = Rest,
+            MPLSTag = #mpls_tag{stack = lists:reverse(Acc),
+                                ether_type = EtherType},
+            {MPLSTag, Payload}
+    end.
+
+%%
+%% 802.1Q
+%%
+ieee802_1q_tag(#ieee802_1q_tag{pcp = PCP,
+                               cfi = CFI,
+                               vid = VID,
+                               ether_type = EtherType}) ->
+    <<PCP:3, CFI:1, VID/bits, EtherType:16>>;
+ieee802_1q_tag(<<PCP:3, CFI:1, VID:12/bits, EtherType:16, Payload/binary>>) ->
+    {#ieee802_1q_tag{pcp = PCP,
+                     cfi = CFI,
+                     vid = VID,
+                     ether_type = EtherType},
+     Payload}.
 
 %%
 %% ARP
 %%
 arp(<<Hrd:16, Pro:16,
-    Hln:8, Pln:8, Op:16,
-    Sha:6/bytes,
-    SA1:8, SA2:8, SA3:8, SA4:8,
-    Tha:6/bytes,
-    DA1:8, DA2:8, DA3:8, DA4:8,
-    Payload/binary>>
-) ->
+      Hln:8, Pln:8, Op:16,
+      Sha:6/bytes,
+      SAddr:32/bits,
+      Tha:6/bytes,
+      DAddr:32/bits,
+      Payload/binary>>
+   ) ->
     {#arp{
         hrd = Hrd, pro = Pro,
         hln = Hln, pln = Pln, op = Op,
         sha = Sha,
-        sip = {SA1,SA2,SA3,SA4},
+        sip = SAddr,
         tha = Tha,
-        tip = {DA1,DA2,DA3,DA4}
-    }, Payload};
+        tip = DAddr
+       }, Payload};
 arp(#arp{
-        hrd = Hrd, pro = Pro,
-        hln = Hln, pln = Pln, op = Op,
-        sha = Sha,
-        sip = {SA1,SA2,SA3,SA4},
-        tha = Tha,
-        tip = {DA1,DA2,DA3,DA4}
-    }) ->
+       hrd = Hrd, pro = Pro,
+       hln = Hln, pln = Pln, op = Op,
+       sha = Sha,
+       sip = SAddr,
+       tha = Tha,
+       tip = DAddr
+      }) ->
     <<Hrd:16, Pro:16,
-    Hln:8, Pln:8, Op:16,
-    Sha:6/bytes,
-    SA1:8, SA2:8, SA3:8, SA4:8,
-    Tha:6/bytes,
-    DA1:8, DA2:8, DA3:8, DA4:8>>.
+      Hln:8, Pln:8, Op:16,
+      Sha:6/bytes,
+      SAddr:32/bits,
+      Tha:6/bytes,
+      DAddr:32/bits>>.
 
 
 %%
 %% IPv4
 %%
 ipv4(
-    <<4:4, HL:4, ToS:8, Len:16,
+  <<4:4, HL:4, DSCP:6, ECN:2, Len:16,
     Id:16, 0:1, DF:1, MF:1, %% RFC791 states it's a MUST
     Off:13, TTL:8, P:8, Sum:16,
-    SA1:8, SA2:8, SA3:8, SA4:8,
-    DA1:8, DA2:8, DA3:8, DA4:8,
-    Rest/binary>>
-) when HL >= 5 ->
+    SAddr:32/bits, DAddr:32/bits, Rest/binary>>
+ ) when HL >= 5 ->
     {Opt, Payload} = options(HL, Rest),
     {#ipv4{
-        hl = HL, tos = ToS, len = Len,
+        hl = HL, dscp = DSCP, ecn = ECN, len = Len,
         id = Id, df = DF, mf = MF,
         off = Off, ttl = TTL, p = P, sum = Sum,
-        saddr = {SA1,SA2,SA3,SA4},
-        daddr = {DA1,DA2,DA3,DA4},
+        saddr = SAddr,
+        daddr = DAddr,
         opt = Opt
-    }, Payload};
+       }, Payload};
 ipv4(#ipv4{
-        hl = HL, tos = ToS, len = Len,
+        hl = HL, dscp = DSCP, ecn = ECN, len = Len,
         id = Id, df = DF, mf = MF,
         off = Off, ttl = TTL, p = P, sum = Sum,
-        saddr = {SA1,SA2,SA3,SA4},
-        daddr = {DA1,DA2,DA3,DA4}
-    }) ->
-    <<4:4, HL:4, ToS:8, Len:16,
-    Id:16, 0:1, DF:1, MF:1, %% RFC791 states it's a MUST
-    Off:13, TTL:8, P:8, Sum:16,
-    SA1:8, SA2:8, SA3:8, SA4:8,
-    DA1:8, DA2:8, DA3:8, DA4:8>>.
+        saddr = SAddr, daddr = DAddr,
+        opt = Opt
+       }) ->
+    <<4:4, HL:4, DSCP:6, ECN:2, Len:16,
+      Id:16, 0:1, DF:1, MF:1, %% RFC791 states it's a MUST
+      Off:13, TTL:8, P:8, Sum:16,
+      SAddr:32/bits, DAddr:32/bits, Opt/binary>>.
 
 
 %%
 %% IPv6
 %%
 ipv6(
-    <<6:4, Class:8, Flow:20,
+  <<6:4, Class:8, Flow:20,
     Len:16, Next:8, Hop:8,
-    SA1:16, SA2:16, SA3:16, SA4:16, SA5:16, SA6:16, SA7:16, SA8:16,
-    DA1:16, DA2:16, DA3:16, DA4:16, DA5:16, DA6:16, DA7:16, DA8:16,
+    SAddr:128/bits, DAddr:128/bits,
     Payload/binary>>
-) ->
+ ) ->
     {#ipv6{
         class = Class, flow = Flow,
         len = Len, next = Next, hop = Hop,
-        saddr = {SA1, SA2, SA3, SA4, SA5, SA6, SA7, SA8},
-        daddr = {DA1, DA2, DA3, DA4, DA5, DA6, DA7, DA8}
-    }, Payload};
+        saddr = SAddr, daddr = DAddr
+       }, Payload};
 ipv6(#ipv6{
         class = Class, flow = Flow,
         len = Len, next = Next, hop = Hop,
-        saddr = {SA1, SA2, SA3, SA4, SA5, SA6, SA7, SA8},
-        daddr = {DA1, DA2, DA3, DA4, DA5, DA6, DA7, DA8}
-    }) ->
+        saddr = SAddr, daddr = DAddr
+       }) ->
     <<6:4, Class:8, Flow:20,
-    Len:16, Next:8, Hop:8,
-    SA1:16, SA2:16, SA3:16, SA4:16, SA5:16, SA6:16, SA7:16, SA8:16,
-    DA1:16, DA2:16, DA3:16, DA4:16, DA5:16, DA6:16, DA7:16, DA8:16>>.
+      Len:16, Next:8, Hop:8,
+      SAddr:128/bits, DAddr:128/bits>>.
+
+ipv6_header(Next, #ipv6_header{next = OldNext,
+                               content = Content}) ->
+    NextCode = ipv6_proto_code(Next, OldNext),
+    HdrLen = byte_size(Content) + 2, % +2 = + NextCode + ExtLen
+    HdrLen8 = (HdrLen + 7) div 8, % in 8-octet parts; +7 to round up
+    ExtLen = HdrLen8 - 1, %% not including the first 8 octets
+    <<NextCode:8,
+      ExtLen:8,
+      Content/binary>>;
+ipv6_header(HeaderType, <<Next:8, ExtLen:8, Tail/binary>>) ->
+    ContentLen = 8 * ExtLen + 8 - 2, %% -2 = - Next - ExtLen
+    <<Content:ContentLen/binary, Payload/binary>> = Tail,
+    {#ipv6_header{type = HeaderType,
+                  next = Next,
+                  content = Content}, Payload}.
 
 %%
 %% GRE
@@ -311,38 +554,38 @@ gre(#gre{c = 1, res0 = Res0, ver = Ver, type = Type,
 %% TCP
 %%
 tcp(
-    <<SPort:16, DPort:16,
-      SeqNo:32,
-      AckNo:32,
-      Off:4, 0:4, CWR:1, ECE:1, URG:1, ACK:1,
-          PSH:1, RST:1, SYN:1, FIN:1, Win:16,
-      Sum:16, Urp:16,
-      Rest/binary>>
-) when Off >= 5 ->
+  <<SPort:16, DPort:16,
+    SeqNo:32,
+    AckNo:32,
+    Off:4, 0:4, CWR:1, ECE:1, URG:1, ACK:1,
+    PSH:1, RST:1, SYN:1, FIN:1, Win:16,
+    Sum:16, Urp:16,
+    Rest/binary>>
+ ) when Off >= 5 ->
     {Opt, Payload} = options(Off, Rest),
     {#tcp{
         sport = SPort, dport = DPort,
         seqno = SeqNo,
         ackno = AckNo,
         off = Off, cwr = CWR, ece = ECE, urg = URG, ack = ACK,
-            psh = PSH, rst = RST, syn = SYN, fin = FIN, win = Win,
+        psh = PSH, rst = RST, syn = SYN, fin = FIN, win = Win,
         sum = Sum, urp = Urp,
         opt = Opt
-    }, Payload};
+       }, Payload};
 tcp(#tcp{
-        sport = SPort, dport = DPort,
-        seqno = SeqNo,
-        ackno = AckNo,
-        off = Off, cwr = CWR, ece = ECE, urg = URG, ack = ACK,
-            psh = PSH, rst = RST, syn = SYN, fin = FIN, win = Win,
-        sum = Sum, urp = Urp
-    }) ->
+       sport = SPort, dport = DPort,
+       seqno = SeqNo,
+       ackno = AckNo,
+       off = Off, cwr = CWR, ece = ECE, urg = URG, ack = ACK,
+       psh = PSH, rst = RST, syn = SYN, fin = FIN, win = Win,
+       sum = Sum, urp = Urp, opt = Opt
+      }) ->
     <<SPort:16, DPort:16,
       SeqNo:32,
       AckNo:32,
       Off:4, 0:4, CWR:1, ECE:1, URG:1, ACK:1,
-          PSH:1, RST:1, SYN:1, FIN:1, Win:16,
-      Sum:16, Urp:16>>.
+      PSH:1, RST:1, SYN:1, FIN:1, Win:16,
+      Sum:16, Urp:16, Opt/binary >>.
 
 options(Offset, Payload) ->
     N = (Offset-5)*4,
@@ -352,46 +595,39 @@ options(Offset, Payload) ->
 %%
 %% SCTP
 %%
--spec sctp(binary()) -> {#sctp{}, []}.
 sctp(<<SPort:16, DPort:16, VTag:32, Sum:32, Payload/binary>>) ->
-    SCTP = #sctp{
-        sport = SPort, dport = DPort, vtag = VTag,
-        sum = Sum, chunks = sctp_decode_chunks(Payload)
-    },
-    {SCTP, []}.
+    {#sctp{sport = SPort, dport = DPort, vtag = VTag, sum = Sum,
+           chunks=sctp_chunk_list_gen(Payload)}, []}.
 
--spec sctp_decode_chunks(binary()) -> [#sctp_chunk{}].
-sctp_decode_chunks(Chunks) ->
-    sctp_decode_chunks(Chunks, []).
+sctp_chunk_list_gen(Payload) ->
+    sctp_chunk_list_gen(Payload, []).
 
--spec sctp_decode_chunks(binary(), list()) -> [#sctp_chunk{}].
-sctp_decode_chunks(<<_Type:8, _Flags:8, Length:16, Rest/binary>>, Acc)
-        when Length =< 4 ->
-    sctp_decode_chunks(Rest, Acc);
+sctp_chunk_list_gen(Payload, List) ->
+    %% chop the first chunk off the payload
+    case sctp_chunk_chop(Payload) of
+        {Chunk, Remainder} ->
+            %% loop
+            sctp_chunk_list_gen(Remainder, [Chunk|List]);
+        [] ->
+            List
+    end.
 
-sctp_decode_chunks(<<Type:8, Flags:8, Length:16, Rest/binary>>, Acc) ->
-    L = case Length rem 4 of
-        0 -> % No padding bytes
-            Length - 4;
-        Pad ->
-            Length + (4 - Pad) - 4
-    end,
-    <<Payload:L/binary-unit:8, Tail/binary>> = Rest,
-    sctp_decode_chunks(Tail, [sctp_chunk(Type, Flags, Length, Payload) | Acc]);
-sctp_decode_chunks(_, Acc) -> Acc.
+sctp_chunk_chop(<<>>) ->
+    [];
+sctp_chunk_chop(<<Ctype:8, Cflags:8, Clen:16, Remainder/binary>>) ->
+    Payload = binary:part(Remainder, 0, Clen-4),
+    Tail = binary:part(Remainder, Clen-4, byte_size(Remainder)-(Clen-4)),
+    {sctp_chunk(Ctype, Cflags, Clen, Payload), Tail}.
 
--spec sctp_chunk(byte(), byte(), non_neg_integer(), binary()) -> #sctp_chunk{}.
 sctp_chunk(Ctype, Cflags, Clen, Payload) ->
-	#sctp_chunk{
-        type = Ctype, flags = Cflags, len = Clen - 4,
-        payload = sctp_chunk_payload(Ctype, Payload)
-    }.
+    #sctp_chunk{type=Ctype, flags=Cflags, len = Clen-4,
+                payload=sctp_chunk_payload(Ctype, Payload)}.
 
--spec sctp_chunk_payload(non_neg_integer(), binary()) -> #sctp_chunk_data{} | binary().
 sctp_chunk_payload(0, <<Tsn:32, Sid:16, Ssn:16, Ppi:32, Data/binary>>) ->
-	#sctp_chunk_data{tsn = Tsn, sid = Sid, ssn = Ssn, ppi = Ppi, data = Data};
+    #sctp_chunk_data{tsn=Tsn, sid=Sid, ssn=Ssn, ppi=Ppi, data=Data};
 sctp_chunk_payload(_, Data) ->
-	Data.
+    Data.
+
 
 %%
 %% UDP
@@ -406,228 +642,242 @@ udp(#udp{sport = SPort, dport = DPort, ulen = ULen, sum = Sum}) ->
 %% ICMP
 %%
 
-% Destination Unreachable Message
+%% Destination Unreachable Message
 icmp(<<?ICMP_DEST_UNREACH:8, Code:8, Checksum:16, Unused:32/bits, Payload/binary>>) ->
     {#icmp{
         type = ?ICMP_DEST_UNREACH, code = Code, checksum = Checksum, un = Unused
-    }, Payload};
+       }, Payload};
 icmp(#icmp{
         type = ?ICMP_DEST_UNREACH, code = Code, checksum = Checksum, un = Unused
-    }) ->
+       }) ->
     <<?ICMP_DEST_UNREACH:8, Code:8, Checksum:16, Unused:32/bits>>;
 
-% Time Exceeded Message
+%% Time Exceeded Message
 icmp(<<?ICMP_TIME_EXCEEDED:8, Code:8, Checksum:16, Unused:32/bits, Payload/binary>>) ->
     {#icmp{
         type = ?ICMP_TIME_EXCEEDED, code = Code, checksum = Checksum, un = Unused
-    }, Payload};
+       }, Payload};
 icmp(#icmp{
         type = ?ICMP_TIME_EXCEEDED, code = Code, checksum = Checksum, un = Unused
-    }) ->
+       }) ->
     <<?ICMP_TIME_EXCEEDED:8, Code:8, Checksum:16, Unused:32/bits>>;
 
-% Parameter Problem Message
+%% Parameter Problem Message
 icmp(<<?ICMP_PARAMETERPROB:8, Code:8, Checksum:16, Pointer:8, Unused:24/bits, Payload/binary>>) ->
     {#icmp{
         type = ?ICMP_PARAMETERPROB, code = Code, checksum = Checksum, pointer = Pointer,
         un = Unused
-    }, Payload};
+       }, Payload};
 icmp(#icmp{
         type = ?ICMP_PARAMETERPROB, code = Code, checksum = Checksum, pointer = Pointer,
         un = Unused
-    }) ->
+       }) ->
     <<?ICMP_PARAMETERPROB:8, Code:8, Checksum:16, Pointer:8, Unused:24/bits>>;
 
-% Source Quench Message
+%% Source Quench Message
 icmp(<<?ICMP_SOURCE_QUENCH:8, 0:8, Checksum:16, Unused:32/bits, Payload/binary>>) ->
     {#icmp{
         type = ?ICMP_SOURCE_QUENCH, code = 0, checksum = Checksum, un = Unused
-    }, Payload};
+       }, Payload};
 icmp(#icmp{
         type = ?ICMP_SOURCE_QUENCH, code = Code, checksum = Checksum, un = Unused
-    }) ->
+       }) ->
     <<?ICMP_SOURCE_QUENCH:8, Code:8, Checksum:16, Unused:32/bits>>;
 
-% Redirect Message
-icmp(<<?ICMP_REDIRECT:8, Code:8, Checksum:16, DA1, DA2, DA3, DA4, Payload/binary>>) ->
+%% Redirect Message
+icmp(<<?ICMP_REDIRECT:8, Code:8, Checksum:16, DAddr:32/bits, Payload/binary>>) ->
     {#icmp{
-        type = ?ICMP_REDIRECT, code = Code, checksum = Checksum, gateway = {DA1,DA2,DA3,DA4}
-    }, Payload};
+        type = ?ICMP_REDIRECT, code = Code, checksum = Checksum, gateway = DAddr
+       }, Payload};
 icmp(#icmp{
-        type = ?ICMP_REDIRECT, code = Code, checksum = Checksum, gateway = {DA1,DA2,DA3,DA4}
-    }) ->
-    <<?ICMP_REDIRECT:8, Code:8, Checksum:16, DA1, DA2, DA3, DA4>>;
+        type = ?ICMP_REDIRECT, code = Code, checksum = Checksum, gateway = DAddr
+       }) ->
+    <<?ICMP_REDIRECT:8, Code:8, Checksum:16, DAddr:32/bits>>;
 
-% Echo or Echo Reply Message
+%% Echo or Echo Reply Message
 icmp(<<Type:8, Code:8, Checksum:16, Id:16, Sequence:16, Payload/binary>>)
-when Type =:= ?ICMP_ECHO; Type =:= ?ICMP_ECHOREPLY ->
+  when Type =:= ?ICMP_ECHO; Type =:= ?ICMP_ECHOREPLY ->
     {#icmp{
         type = Type, code = Code, checksum = Checksum, id = Id,
         sequence = Sequence
-    }, Payload};
+       }, Payload};
 icmp(#icmp{
         type = Type, code = Code, checksum = Checksum, id = Id,
         sequence = Sequence
-    })
-when Type =:= ?ICMP_ECHO; Type =:= ?ICMP_ECHOREPLY ->
+       })
+  when Type =:= ?ICMP_ECHO; Type =:= ?ICMP_ECHOREPLY ->
     <<Type:8, Code:8, Checksum:16, Id:16, Sequence:16>>;
 
-% Timestamp or Timestamp Reply Message
+%% Timestamp or Timestamp Reply Message
 icmp(<<Type:8, 0:8, Checksum:16, Id:16, Sequence:16, TS_Orig:32, TS_Recv:32, TS_Tx:32>>)
-when Type =:= ?ICMP_TIMESTAMP; Type =:= ?ICMP_TIMESTAMPREPLY ->
+  when Type =:= ?ICMP_TIMESTAMP; Type =:= ?ICMP_TIMESTAMPREPLY ->
     {#icmp{
         type = Type, code = 0, checksum = Checksum, id = Id,
         sequence = Sequence, ts_orig = TS_Orig, ts_recv = TS_Recv, ts_tx = TS_Tx
-    }, <<>>};
+       }, <<>>};
 icmp(#icmp{
         type = Type, code = Code, checksum = Checksum, id = Id,
         sequence = Sequence, ts_orig = TS_Orig, ts_recv = TS_Recv, ts_tx = TS_Tx
-    }) when Type =:= ?ICMP_TIMESTAMP; Type =:= ?ICMP_TIMESTAMPREPLY ->
+       }) when Type =:= ?ICMP_TIMESTAMP; Type =:= ?ICMP_TIMESTAMPREPLY ->
     <<Type:8, Code:8, Checksum:16, Id:16, Sequence:16, TS_Orig:32, TS_Recv:32, TS_Tx:32>>;
 
-% Information Request or Information Reply Message
+%% Information Request or Information Reply Message
 icmp(<<Type:8, 0:8, Checksum:16, Id:16, Sequence:16>>)
-when Type =:= ?ICMP_INFO_REQUEST; Type =:= ?ICMP_INFO_REPLY ->
+  when Type =:= ?ICMP_INFO_REQUEST; Type =:= ?ICMP_INFO_REPLY ->
     {#icmp{
         type = Type, code = 0, checksum = Checksum, id = Id,
         sequence = Sequence
-    }, <<>>};
+       }, <<>>};
 icmp(#icmp{
         type = Type, code = Code, checksum = Checksum, id = Id,
         sequence = Sequence
-    }) when Type =:= ?ICMP_INFO_REQUEST; Type =:= ?ICMP_INFO_REPLY ->
+       }) when Type =:= ?ICMP_INFO_REQUEST; Type =:= ?ICMP_INFO_REPLY ->
     <<Type:8, Code:8, Checksum:16, Id:16, Sequence:16>>;
 
-% Catch/build arbitrary types
+%% Catch/build arbitrary types
 icmp(<<Type:8, Code:8, Checksum:16, Un:32, Payload/binary>>) ->
     {#icmp{
         type = Type, code = Code, checksum = Checksum, un = Un
-    }, Payload};
+       }, Payload};
 icmp(#icmp{type = Type, code = Code, checksum = Checksum, un = Un}) ->
     <<Type:8, Code:8, Checksum:16, Un:32>>.
-
-
-%%
-%% ICMPv6
-%%
-
-% ICMPv6 Error Messages
-
-% Destination Unreachable Message
-icmp6(<<?ICMP6_DST_UNREACH:8, Code:8, Checksum:16, Unused:32/bits, Payload/binary>>) ->
-    {#icmp6{
-        type = ?ICMP6_DST_UNREACH, code = Code, checksum = Checksum, un = Unused
-    }, Payload};
-icmp6(#icmp6{
-        type = ?ICMP6_DST_UNREACH, code = Code, checksum = Checksum, un = Unused
-    }) ->
-    <<?ICMP6_DST_UNREACH:8, Code:8, Checksum:16, Unused:32/bits>>;
-
-% Packet too big
-icmp6(<<?ICMP6_PACKET_TOO_BIG:8, Code:8, Checksum:16, MTU:32, Payload/binary>>) ->
-    {#icmp6{
-        type = ?ICMP6_PACKET_TOO_BIG, code = Code, checksum = Checksum, mtu = MTU
-    }, Payload};
-icmp6(#icmp6{
-        type = ?ICMP6_PACKET_TOO_BIG, code = Code, checksum = Checksum, mtu = MTU
-    }) ->
-    <<?ICMP6_PACKET_TOO_BIG:8, Code:8, Checksum:16, MTU:32>>;
-
-% Time Exceeded Message
-icmp6(<<?ICMP6_TIME_EXCEEDED:8, Code:8, Checksum:16, Unused:32/bits, Payload/binary>>) ->
-    {#icmp6{
-        type = ?ICMP6_TIME_EXCEEDED, code = Code, checksum = Checksum, un = Unused
-    }, Payload};
-icmp6(#icmp6{
-        type = ?ICMP6_TIME_EXCEEDED, code = Code, checksum = Checksum, un = Unused
-    }) ->
-    <<?ICMP6_TIME_EXCEEDED:8, Code:8, Checksum:16, Unused:32/bits>>;
-
-% Parameter Problem Message
-icmp6(<<?ICMP6_PARAM_PROB:8, Code:8, Checksum:16, Ptr:32, Payload/binary>>) ->
-    {#icmp6{
-        type = ?ICMP6_PARAM_PROB, code = Code, checksum = Checksum, pptr = Ptr
-    }, Payload};
-icmp6(#icmp6{
-        type = ?ICMP6_PARAM_PROB, code = Code, checksum = Checksum, pptr = Ptr
-    }) ->
-    <<?ICMP6_PARAM_PROB:8, Code:8, Checksum:16, Ptr:32>>;
-
-% ICMPv6 Informational Messages
-
-% Echo Request Message/Echo Reply Message
-icmp6(<<Type:8, Code:8, Checksum:16, Id:16, Seq:16, Payload/binary>>)
-        when Type =:= ?ICMP6_ECHO_REQUEST; Type =:= ?ICMP6_ECHO_REPLY ->
-    {#icmp6{
-        type = Type, code = Code, checksum = Checksum,
-        id = Id, seq = Seq
-    }, Payload};
-icmp6(#icmp6{
-        type = Type, code = Code, checksum = Checksum,
-        id = Id, seq = Seq
-    }) when Type =:= ?ICMP6_ECHO_REQUEST; Type =:= ?ICMP6_ECHO_REPLY ->
-    <<Type:8, Code:8, Checksum:16, Id:16, Seq:16>>.
 
 
 %%
 %% Utility functions
 %%
 
-% TCP pseudoheader checksum
-checksum([#ipv4{
-        saddr = {SA1,SA2,SA3,SA4},
-        daddr = {DA1,DA2,DA3,DA4}
-    },
-    #tcp{
-        off = Off
-    } = TCPhdr,
-    Payload
-]) ->
-    Len = Off * 4,
+icmpv6(<<Type:8, Code:8, Checksum:16, Body/bits>>) ->
+    {#icmpv6{type = Type, code = Code, checksum = Checksum}, Body};
+icmpv6(#icmpv6{type = Type, code = Code, checksum = Checksum}) ->
+    <<Type:8, Code:8, Checksum:16>>.
+
+%%
+%% NDP
+%%
+
+ndp_ns(<<_:32, TGTAddr:128/bits, Rest/binary>>) ->
+    NDP = #ndp_ns{tgt_addr = TGTAddr},
+    case lists:keyfind(?NDP_OPT_SLL, 1, parse_ndp_options(Rest)) of
+        {?NDP_OPT_SLL, SLL} ->
+            NDP#ndp_ns{sll = SLL};
+        false ->
+            NDP
+    end;
+ndp_ns(#ndp_ns{tgt_addr = TGTAddr, sll = SLL}) ->
+    <<0:32, TGTAddr/binary, (ndp_addr(?NDP_OPT_SLL, SLL))/binary>>.
+
+ndp_na(<<R:1, S:1, O:1, _:29, SRCAddr:128/bits, Rest/binary>>) ->
+    NDP = #ndp_na{r = R, s = S, o = O, src_addr = SRCAddr},
+    case lists:keyfind(?NDP_OPT_TLL, 1, parse_ndp_options(Rest)) of
+        {?NDP_OPT_TLL, TLL} ->
+            NDP#ndp_na{tll = TLL};
+        false ->
+            NDP
+    end;
+ndp_na(#ndp_na{src_addr = SRCAddr, r = R, s = S, o = O, tll = TLL}) ->
+    <<R:1, S:1, O:1, 0:29, SRCAddr/binary, (ndp_addr(?NDP_OPT_TLL, TLL))/binary>>.
+
+parse_ndp_options(<<>>) ->
+    [];
+parse_ndp_options(<<_Type:8, 0:8, Rest/binary>>) ->
+    parse_ndp_options(Rest); % silently discard option of length 0
+parse_ndp_options(<<Type:8, Len:8, Rest/binary>>) ->
+    DataLen = 8 * Len - 2,
+    <<Data:DataLen/binary, Next/binary>> = Rest,
+    [{Type, Data} | parse_ndp_options(Next)].
+
+ndp_addr(_, undefined) ->
+    <<>>;
+ndp_addr(Type, Value) ->
+    Size = (byte_size(Value) + 2 + 7) div 8,
+    <<Type:8, Size:8, Value/binary>>.
+
+%%
+%% Utility functions
+%%
+
+checksum(#ipv4{saddr = SAddr,
+               daddr = DAddr},
+         #tcp{} = TCPhdr,
+         Payload) ->
     TCP = tcp(TCPhdr#tcp{sum = 0}),
-    Pad = case Len rem 2 of
-        0 -> 0;
-        1 -> 8
-    end,
-    checksum(
-        <<SA1,SA2,SA3,SA4,
-          DA1,DA2,DA3,DA4,
-          0:8,
-          ?IPPROTO_TCP:8,
-          Len:16,
-          TCP/binary,
-          Payload/bits,
-          0:Pad>>
-    );
+    Len = size(TCP) + size(Payload),
+    Pad = 8 * (Len rem 2),
+    checksum(<<SAddr:32/bits,
+               DAddr:32/bits,
+               0:8, ?IPPROTO_TCP:8,
+               Len:16,
+               TCP/binary,
+               Payload/bits,
+               0:Pad>>);
 
-% UDP pseudoheader checksum
-checksum([#ipv4{
-        saddr = {SA1,SA2,SA3,SA4},
-        daddr = {DA1,DA2,DA3,DA4}
-    },
-    #udp{
-        ulen = Len
-    } = Hdr,
-    Payload
-]) ->
+checksum(#ipv6{saddr = SAddr,
+               daddr = DAddr},
+         #tcp{} = TCPhdr,
+         Payload) ->
+    TCP = tcp(TCPhdr#tcp{sum = 0}),
+    Len = size(TCP) + size(Payload),
+    Pad = 8 * (Len rem 2),
+    checksum(<<SAddr:128/bits,
+               DAddr:128/bits,
+               Len:32,
+               0:24, ?IPPROTO_TCP:8,
+               TCP/binary,
+               Payload/bits,
+               0:Pad>>);
+
+checksum(#ipv4{saddr = SAddr,
+               daddr = DAddr},
+         #udp{ulen = Len} = Hdr,
+         Payload) ->
     UDP = udp(Hdr#udp{sum = 0}),
-    Pad = case Len rem 2 of
-        0 -> 0;
-        1 -> 8
-    end,
-    checksum(
-        <<SA1,SA2,SA3,SA4,
-          DA1,DA2,DA3,DA4,
-          0:8,
-          ?IPPROTO_UDP:8,
-          Len:16,
-          UDP/binary,
-          Payload/bits,
-          0:Pad>>
-    );
+    Pad = bit_size(Payload) rem 16,
+    checksum(<<SAddr:32/bits,
+               DAddr:32/bits,
+               0:8,
+               ?IPPROTO_UDP:8,
+               Len:16,
+               UDP/binary,
+               Payload/bits,
+               0:Pad>>);
 
+checksum(#ipv6{saddr = SAddr,
+               daddr = DAddr},
+         #udp{ulen = Len} = Hdr,
+         Payload) ->
+    UDP = udp(Hdr#udp{sum = 0}),
+    Pad = bit_size(Payload) rem 16,
+    checksum(<<SAddr:128/bits,
+               DAddr:128/bits,
+               Len:32,
+               0:24,
+               ?IPPROTO_UDP:8,
+               UDP/binary,
+               Payload/bits,
+               0:Pad>>);
+
+checksum(#ipv6{saddr = SAddr,
+               daddr = DAddr},
+         #icmpv6{} = Hdr,
+         Payload) ->
+    ICMP = icmpv6(Hdr#icmpv6{checksum = 0}),
+    Len = size(ICMP) + size(Payload),
+    checksum(<<SAddr:128/bits,
+               DAddr:128/bits,
+               Len:32,
+               0:24,
+               ?IPPROTO_ICMPV6:8,
+               ICMP/binary,
+               Payload/bits>>);
+
+checksum(_, _, _) ->
+    0.
+
+checksum([IP, TransportLayer, Payload]) ->
+    checksum(IP, TransportLayer, Payload);
 checksum(#ipv4{} = H) ->
-    checksum(ipv4(H));
+    checksum(ipv4(H#ipv4{sum=0}));
 checksum(Hdr) ->
     lists:foldl(fun compl/2, 0, [ W || <<W:16>> <= Hdr ]).
 
@@ -640,6 +890,10 @@ compl(N,S) -> compl(N+S).
 valid(16#FFFF) -> true;
 valid(_) -> false.
 
+find_ip([#ipv4{} = IP | _]) -> {ok, IP};
+find_ip([#ipv6{} = IP | _]) -> {ok, IP};
+find_ip([_ | Tail]) -> find_ip(Tail);
+find_ip([]) -> {error, no_ip}.
 
 %%
 %% Datalink types
@@ -662,7 +916,7 @@ dlt(?DLT_PPP_BSDOS) -> ppp_bsdos;
 dlt(?DLT_PFSYNC) -> pfsync;
 dlt(?DLT_ATM_CLIP) -> atm_clip;
 dlt(?DLT_PPP_SERIAL) -> ppp_serial;
-%dlt(?DLT_C_HDLC) -> c_hdlc;
+%% dlt(?DLT_C_HDLC) -> c_hdlc;
 dlt(?DLT_CHDLC) -> chdlc;
 dlt(?DLT_IEEE802_11) -> ieee802_11;
 dlt(?DLT_LOOP) -> loop;
