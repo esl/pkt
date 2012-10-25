@@ -88,7 +88,10 @@
               packet/0
              ]).
 
-%%% Encapsulate ----------------------------------------------------------------
+%%%----------------------------------------------------------------
+%%% Encapsulate
+%%% Encodes list of headers and payload into binary packet
+%%%----------------------------------------------------------------
 
 -spec encapsulate(packet()) -> binary().
 encapsulate(Packet) ->
@@ -157,7 +160,10 @@ encapsulate(EtherType, [#ether{} = Ether | Packet], Binary) ->
     EtherBinary = ether(fill_ether_type(Ether, EtherType)),
     encapsulate(ether, Packet, << EtherBinary/binary, Binary/binary >>).
 
-%%% Decapsulate ----------------------------------------------------------------
+%%%----------------------------------------------------------------
+%%% Decapsulate
+%%% Decodes given binary data into a list of headers and payload
+%%%----------------------------------------------------------------
 
 decapsulate_dlt(Dlt, Data) ->
     decapsulate({link_type(Dlt), Data}, []).
@@ -166,9 +172,13 @@ decapsulate({DLT, Data}) when is_integer(DLT) ->
     decapsulate({link_type(DLT), Data}, []);
 decapsulate({DLT, Data}) when is_atom(DLT) ->
     decapsulate({DLT, Data}, []);
+
+%% Initial call, assumes that packet has ether or pbb_ether header
+%% then unwinds other subheaders and payload with recursive calls
 decapsulate(Data) when is_binary(Data) ->
     decapsulate({ether, Data}, []).
 
+%% Final call, returns list of headers (decoded packet)
 decapsulate(stop, Packet) ->
     lists:reverse(Packet);
 
@@ -243,12 +253,18 @@ decapsulate({ndp_na, Data}, Packet) ->
 decapsulate({_, Data}, Packet) ->
     decapsulate(stop, [{truncated, Data}|Packet]).
 
+%%%----------------------------------------------------------------
+%%%
+%%%
+
 ether_type(?ETH_P_IP) -> ipv4;
 ether_type(?ETH_P_IPV6) -> ipv6;
 ether_type(?ETH_P_ARP) -> arp;
 ether_type(?ETH_P_802_1Q) -> ieee802_1q_tag;
 ether_type(?ETH_P_MPLS_UNI) -> {mpls_tag, unicast};
 ether_type(?ETH_P_MPLS_MULTI) -> {mpls_tag, multicast};
+ether_type(?ETH_PBB) -> pbb_ether;
+ether_type(?ETH_PBB_SERVICE_ENCAP) -> pbb_service_encap;
 ether_type(_) -> unsupported.
 
 ether_type_code(ipv4, _) -> ?ETH_P_IP;
@@ -257,6 +273,8 @@ ether_type_code(arp, _) -> ?ETH_P_ARP;
 ether_type_code(ieee802_1q_tag, _) -> ?ETH_P_802_1Q;
 ether_type_code({mpls_tag, unicast}, _) -> ?ETH_P_MPLS_UNI;
 ether_type_code({mpls_tag, multicast}, _) -> ?ETH_P_MPLS_MULTI;
+ether_type_code(pbb_ether, _) -> ?ETH_PBB;
+ether_type_code(pbb_service_encap, _) -> ?ETH_PBB_SERVICE_ENCAP;
 ether_type_code(unsupported, Old) -> Old.
 
 link_type(?DLT_NULL) -> null;
@@ -361,18 +379,43 @@ linux_cooked(#linux_cooked{
 %%
 %% Ethernet
 %%
-ether(<<Dhost:6/bytes, Shost:6/bytes, Type:16, Payload/binary>>) ->
+%% @doc Decode PBB ether header here, because it can appear in place of regular
+%% ethernet header
+ether(<< %% PBB ethernet header
+		 Dhost:6/bytes, Shost:6/bytes, ?ETH_PBB:16, PCPDE:4, BVid:12,
+		 %% service encapsulation header, merged with PBB ether for simplicity
+		 ?ETH_PBB_SERVICE_ENCAP:16, EncapFlagPCP:3, EncapFlagDEI:1,
+		 EncapFlagRes:4, EncapISID:24,
+		 %% rest of data to be cut off
+		 Rest/binary>>) ->
+    {#pbb_ether{
+        dhost = Dhost, shost = Shost,
+        %% type = ?ETH_PBB,
+		b_tag = PCPDE,
+		b_vid = BVid,
+		%% encap_type = ?ETH_PBB_SERVICE_ENCAP,
+		encap_flag_pcp = EncapFlagPCP,
+		encap_flag_dei = EncapFlagDEI,
+		encap_flag_reserved = EncapFlagRes,
+		encap_i_sid = EncapISID
+       }, Rest};
+%% @doc Regular ethernet header
+ether(<<Dhost:6/bytes, Shost:6/bytes, Type:16, Rest/binary>>) ->
     %% Len = byte_size(Packet) - 4,
     %% <<Payload:Len/bytes, CRC:4/bytes>> = Packet,
     {#ether{
         dhost = Dhost, shost = Shost,
         type = Type
-       }, Payload};
-ether(#ether{
-         dhost = Dhost, shost = Shost,
-         type = Type
-        }) ->
-    <<Dhost:6/bytes, Shost:6/bytes, Type:16>>.
+       }, Rest};
+ether(#ether{ dhost = Dhost, shost = Shost, type = Type }) ->
+    <<Dhost:6/bytes, Shost:6/bytes, Type:16>>;
+ether(#pbb_ether{ dhost = Dhost, shost = Shost, type = Type,
+				  b_tag = BTag, b_vid = BVid, encap_type = EType,
+				  encap_flag_pcp = EPCP, encap_flag_dei = EDEI,
+				  encap_flag_reserved = ERes, encap_i_sid = EISID}) ->
+    <<Dhost:6/bytes, Shost:6/bytes, Type:16, BTag:4, BVid:12,
+	  %% service encapsulation header, merged with PBB ether for simplicity
+	  ?ETH_PBB_SERVICE_ENCAP:16, EPCP:3, EDEI:1, ERes:4, EISID:24>>.
 
 %%
 %% MPLS
