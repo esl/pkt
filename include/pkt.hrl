@@ -10,13 +10,15 @@
 -define(GREHDRLEN, 4).
 
 %% From http://en.wikipedia.org/wiki/EtherType
--define(ETH_P_IP, 16#0800).
--define(ETH_P_ARP, 16#0806).
--define(ETH_P_IPV6, 16#86DD).
--define(ETH_P_802_1Q, 16#8100).
--define(ETH_P_MPLS_UNI, 16#8847).
+-define(ETH_P_IP,         16#0800).
+-define(ETH_P_ARP,        16#0806).
+-define(ETH_P_IPV6,       16#86DD).
+-define(ETH_P_802_1Q,     16#8100).
+-define(ETH_P_MPLS_UNI,   16#8847).
 -define(ETH_P_MPLS_MULTI, 16#8848).
--define(ETH_P_ALL, 16#0300).
+-define(ETH_P_ALL,        16#0300).
+-define(ETH_PBB,          16#88A8).
+-define(ETH_PBB_SERVICE_ENCAP, 16#88E7).
 
 -define(ARPHRD_ETHER, 1).
 -define(ARPHRD_IEEE80211, 801).
@@ -155,6 +157,27 @@
           type = ?ETH_P_IP,
           crc = 0
          }).
+
+%% A ether header for PBB needs http://en.wikipedia.org/wiki/IEEE_802.1ah-2008
+%% It is merged together with service encapsulation header which follows it
+%% normally, to simplify decoding and encoding
+%% see http://www.carrierethernetstudyguide.org/MEF SG/pages/2transport/studyguide_2-1-1-3.html
+-record(pbb_ether, {
+      dhost = <<0,0,0,0,0,0>>
+      , shost = <<0,0,0,0,0,0>>
+      , type = ?ETH_PBB
+      , b_tag          % B-TAG
+      , b_vid = 0      % B-VID, backbone VLAn indicator (12 bit)
+      %%-------------
+      %% A service encapsulation header for PBB
+      %% merged with ethernet PBB header for simplicity
+      %%-------------
+      , encap_type = ?ETH_PBB_SERVICE_ENCAP
+      , encap_flag_pcp      % prio, drop eligible indicator (DEI), no customer address (NCA)
+      , encap_flag_dei
+      , encap_flag_reserved
+      , encap_i_sid         % Service Instance VLAN ID (24 bit)
+     }).
 
 -record(ieee802_1q_tag, {
           pcp = 0,
