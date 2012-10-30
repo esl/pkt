@@ -1,2 +1,6 @@
 *.[oa]
 *.beam
+*.app
+/ebin/
+/.eunit/
+rebar

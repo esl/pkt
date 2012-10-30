@@ -1,17 +1,16 @@
+.PHONY: compile test clean
 
-REBAR=$(shell which rebar || echo ./rebar)
+compile: rebar
+	@./rebar compile
 
-all: compile
+test: rebar
+	@./rebar skip_deps=true eunit
 
-./rebar:
-	erl -noshell -s inets start \
-		-eval 'httpc:request(get, {"http://hg.basho.com/rebar/downloads/rebar", []}, [], [{stream, "./rebar"}])' \
-		-s inets stop -s init stop
-	chmod +x ./rebar
+clean: rebar
+	@./rebar clean
 
-compile: $(REBAR)
-	@$(REBAR) compile
-
-clean: $(REBAR)
-	@$(REBAR) clean
-
+rebar:
+	@erl -noshell -s inets \
+	     -eval 'httpc:request(get, {"http://bit.ly/getrebar", []}, [], [{stream, "rebar"}])' \
+	     -s init stop
+	@chmod u+x rebar
