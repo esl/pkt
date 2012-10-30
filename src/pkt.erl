@@ -155,7 +155,11 @@ encapsulate(EtherType, [#mpls_tag{mode = Mode} = MPLSTag | Packet], Binary) ->
     encapsulate({mpls_tag, Mode}, Packet, << TagBinary/binary, Binary/binary >>);
 encapsulate(EtherType, [#ether{} = Ether | Packet], Binary) ->
     EtherBinary = ether(fill_ether_type(Ether, EtherType)),
-    encapsulate(ether, Packet, << EtherBinary/binary, Binary/binary >>).
+    encapsulate(ether, Packet, << EtherBinary/binary, Binary/binary >>);
+%% we ignore ethertype here because PBB header has fixed ethertype
+encapsulate(_EtherType, [#pbb_ether{} = PBBEther | Packet], Binary) ->
+    Binary2 = encode_pbb_ether(PBBEther),
+    encapsulate(ether, Packet, << Binary2/binary, Binary/binary >>).
 
 %%% Decapsulate ----------------------------------------------------------------
 
@@ -368,22 +372,22 @@ linux_cooked(#linux_cooked{
 %% @doc Decode PBB ether header here, because it can appear in place of regular
 %% ethernet header
 ether(<< %% PBB ethernet header
-		 Dhost:6/bytes, Shost:6/bytes, ?ETH_PBB:16, PCPDE:4, BVid:12,
-		 %% service encapsulation header, merged with PBB ether for simplicity
-		 ?ETH_PBB_SERVICE_ENCAP:16, EncapFlagPCP:3, EncapFlagDEI:1,
-		 EncapFlagRes:4, EncapISID:24,
-		 %% rest of data to be cut off
-		 Rest/binary>>) ->
+         Dhost:6/bytes, Shost:6/bytes, ?ETH_PBB:16, PCPDE:4, BVid:12,
+         %% service encapsulation header, merged with PBB ether for simplicity
+         ?ETH_PBB_SERVICE_ENCAP:16, EncapFlagPCP:3, EncapFlagDEI:1,
+         EncapFlagRes:4, EncapISID:24,
+         %% rest of data to be cut off
+         Rest/binary>>) ->
     {#pbb_ether{
         dhost = Dhost, shost = Shost,
         %% type = ?ETH_PBB,
-		b_tag = PCPDE,
-		b_vid = BVid,
-		%% encap_type = ?ETH_PBB_SERVICE_ENCAP,
-		encap_flag_pcp = EncapFlagPCP,
-		encap_flag_dei = EncapFlagDEI,
-		encap_flag_reserved = EncapFlagRes,
-		encap_i_sid = EncapISID
+        b_tag = PCPDE,
+        b_vid = BVid,
+        %% encap_type = ?ETH_PBB_SERVICE_ENCAP,
+        encap_flag_pcp = EncapFlagPCP,
+        encap_flag_dei = EncapFlagDEI,
+        encap_flag_reserved = EncapFlagRes,
+        encap_i_sid = EncapISID
        }, Rest};
 
 %% @doc Regular ethernet header
@@ -399,15 +403,19 @@ ether(#ether{
          dhost = Dhost, shost = Shost,
          type = Type
         }) ->
-    <<Dhost:6/bytes, Shost:6/bytes, Type:16>>;
+    <<Dhost:6/bytes, Shost:6/bytes, Type:16>>.
 
-ether(#pbb_ether{ dhost = Dhost, shost = Shost, type = Type,
-				  b_tag = BTag, b_vid = BVid, encap_type = EType,
-				  encap_flag_pcp = EPCP, encap_flag_dei = EDEI,
-				  encap_flag_reserved = ERes, encap_i_sid = EISID}) ->
+%%
+%% PBB Ethernet Header
+%% decode_* function is merged with ether/1 look up
+%%
+encode_pbb_ether(#pbb_ether{ dhost = Dhost, shost = Shost, type = Type,
+                  b_tag = BTag, b_vid = BVid, %% encap_type = EType,
+                  encap_flag_pcp = EPCP, encap_flag_dei = EDEI,
+                  encap_flag_reserved = ERes, encap_i_sid = EISID}) ->
     <<Dhost:6/bytes, Shost:6/bytes, Type:16, BTag:4, BVid:12,
-	  %% service encapsulation header, merged with PBB ether for simplicity
-	  ?ETH_PBB_SERVICE_ENCAP:16, EPCP:3, EDEI:1, ERes:4, EISID:24>>.
+      %% service encapsulation header, merged with PBB ether for simplicity
+      ?ETH_PBB_SERVICE_ENCAP:16, EPCP:3, EDEI:1, ERes:4, EISID:24>>.
 
 %%
 %% MPLS
@@ -576,13 +584,13 @@ gre(<<0:1,Res0:12,Ver:3,Type:16,Rest/binary>>) ->
     };
 gre(<<1:1,Res0:12,Ver:3,Type:16,Chksum:16,Res1:16,Rest/binary>>) ->
     {#gre{c = 1, res0 = Res0, ver = Ver, type = Type,
-	chksum = Chksum, res1 = Res1
+    chksum = Chksum, res1 = Res1
        },Rest
     };
 gre(#gre{c = 0, res0 = Res0, ver = Ver, type = Type}) ->
     <<0:1,Res0:12,Ver:3,Type:16>>;
 gre(#gre{c = 1, res0 = Res0, ver = Ver, type = Type,
-	chksum = Chksum, res1 = Res1}) ->
+    chksum = Chksum, res1 = Res1}) ->
     <<1:1,Res0:12,Ver:3,Type:16,Chksum:16,Res1:16>>.
 
 %%
