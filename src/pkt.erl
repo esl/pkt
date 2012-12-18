@@ -35,6 +35,7 @@
 -export([
          encapsulate/1,
          decapsulate/1,
+         decapsulate_pbb/1,
          decapsulate_dlt/2
         ]).
 
@@ -65,6 +66,7 @@
 -type proto() :: tcp | udp | sctp | icmp | icmpv6 | raw | unsupported.
 -type header() :: #linux_cooked{} |
                   #null{} |
+                  #pbb{} |
                   #ether{} |
                   #arp{} |
                   #ieee802_1q_tag{} |
@@ -156,12 +158,14 @@ encapsulate(EtherType, [#mpls_tag{mode = Mode} = MPLSTag | Packet], Binary) ->
 encapsulate(EtherType, [#ether{} = Ether | Packet], Binary) ->
     EtherBinary = ether(fill_ether_type(Ether, EtherType)),
     encapsulate(ether, Packet, << EtherBinary/binary, Binary/binary >>);
-%% we ignore ethertype here because PBB header has fixed ethertype
-encapsulate(_EtherType, [#pbb_ether{} = PBBEther | Packet], Binary) ->
-    Binary2 = encode_pbb_ether(PBBEther),
-    encapsulate(ether, Packet, << Binary2/binary, Binary/binary >>).
+encapsulate(ether, [#pbb{} = PBB | Packet], Binary) ->
+    PBBBinary = pbb(PBB),
+    encapsulate(pbb, Packet, << PBBBinary/binary, Binary/binary >>).
 
 %%% Decapsulate ----------------------------------------------------------------
+
+decapsulate_pbb(Data) when is_binary(Data) ->
+    decapsulate({pbb, Data}, []).
 
 decapsulate_dlt(Dlt, Data) ->
     decapsulate({link_type(Dlt), Data}, []).
@@ -171,8 +175,7 @@ decapsulate({DLT, Data}) when is_integer(DLT) ->
 decapsulate({DLT, Data}) when is_atom(DLT) ->
     decapsulate({DLT, Data}, []);
 
-%% Initial call, assumes that packet has ether or pbb_ether header
-%% then unwinds other subheaders and payload with recursive calls
+%% Initial call
 decapsulate(Data) when is_binary(Data) ->
     decapsulate({ether, Data}, []).
 
@@ -188,9 +191,13 @@ decapsulate({null, Data}, Packet) when byte_size(Data) >= 16 ->
 decapsulate({linux_cooked, Data}, Packet) when byte_size(Data) >= 16 ->
     {Hdr, Payload} = linux_cooked(Data),
     decapsulate({ether_type(Hdr#linux_cooked.pro), Payload}, [Hdr|Packet]);
-decapsulate({ether, Data}, Packet) when byte_size(Data) >= ?ETHERHDRLEN ->
+
+decapsulate({pbb, Data}, Packet) ->
+    {Hdr, Payload} = pbb(Data),
+    decapsulate({ether, Payload}, [Hdr | Packet]);
+decapsulate({ether, Data}, Packet) ->
     {Hdr, Payload} = ether(Data),
-    decapsulate({ether_type(Hdr#ether.type), Payload}, [Hdr|Packet]);
+    decapsulate({ether_type(Hdr#ether.type), Payload}, [Hdr | Packet]);
 
 decapsulate({ieee802_1q_tag, Data}, Packet) ->
     {Tag, Payload} = ieee802_1q_tag(Data),
@@ -369,33 +376,13 @@ linux_cooked(#linux_cooked{
 %% Ethernet
 %%
 
-%% @doc Decode PBB ether header here, because it can appear in place of regular
-%% ethernet header
-ether(<< %% PBB ethernet header
-         Dhost:6/bytes, Shost:6/bytes, ?ETH_PBB:16, PCPDE:4, BVid:12,
-         %% service encapsulation header, merged with PBB ether for simplicity
-         ?ETH_PBB_SERVICE_ENCAP:16, EncapFlagPCP:3, EncapFlagDEI:1,
-         EncapFlagRes:4, EncapISID:24,
-         %% rest of data to be cut off
-         Rest/binary>>) ->
-    {#pbb_ether{
-        dhost = Dhost, shost = Shost,
-        %% type = ?ETH_PBB,
-        b_tag = PCPDE,
-        b_vid = BVid,
-        %% encap_type = ?ETH_PBB_SERVICE_ENCAP,
-        encap_flag_pcp = EncapFlagPCP,
-        encap_flag_dei = EncapFlagDEI,
-        encap_flag_reserved = EncapFlagRes,
-        encap_i_sid = EncapISID
-       }, Rest};
-
-%% @doc Regular ethernet header
+%% @doc Regular ethernet or PBB header
 ether(<<Dhost:6/bytes, Shost:6/bytes, Type:16, Payload/binary>>) ->
     %% Len = byte_size(Packet) - 4,
     %% <<Payload:Len/bytes, CRC:4/bytes>> = Packet,
     {#ether{
-        dhost = Dhost, shost = Shost,
+        dhost = Dhost,
+        shost = Shost,
         type = Type
        }, Payload};
 
@@ -406,16 +393,32 @@ ether(#ether{
     <<Dhost:6/bytes, Shost:6/bytes, Type:16>>.
 
 %%
-%% PBB Ethernet Header
-%% decode_* function is merged with ether/1 look up
+%% PBB
 %%
-encode_pbb_ether(#pbb_ether{ dhost = Dhost, shost = Shost, type = Type,
-                  b_tag = BTag, b_vid = BVid, %% encap_type = EType,
-                  encap_flag_pcp = EPCP, encap_flag_dei = EDEI,
-                  encap_flag_reserved = ERes, encap_i_sid = EISID}) ->
-    <<Dhost:6/bytes, Shost:6/bytes, Type:16, BTag:4, BVid:12,
-      %% service encapsulation header, merged with PBB ether for simplicity
-      ?ETH_PBB_SERVICE_ENCAP:16, EPCP:3, EDEI:1, ERes:4, EISID:24>>.
+pbb(<<Dhost:6/bytes, Shost:6/bytes, ?ETH_P_PBB_B:16, BPcp:3, BDei:1, BVid:12,
+      ?ETH_P_PBB_I:16, IPcp:3, IDei:1, IUca:1, IRsrv:3, ISid:24,
+      Payload/binary>>) ->
+    {#pbb{
+        b_dhost = Dhost,
+        b_shost = Shost,
+        b_type = ?ETH_P_PBB_B,
+        b_pcp = BPcp,
+        b_dei = BDei,
+        b_vid = BVid,
+        i_type = ?ETH_P_PBB_I,
+        i_pcp = IPcp,
+        i_dei = IDei,
+        i_uca = IUca,
+        i_reserved = IRsrv,
+        i_sid = ISid
+       }, Payload};
+
+pbb(#pbb{b_dhost = Dhost, b_shost = Shost,
+         b_pcp = BPcp, b_dei = BDei, b_vid = BVid,
+         i_pcp = IPcp, i_dei = IDei, i_uca = IUca,
+         i_reserved = IRsrv, i_sid = ISid}) ->
+    <<Dhost:6/bytes, Shost:6/bytes, ?ETH_P_PBB_B:16, BPcp:3, BDei:1, BVid:12,
+      ?ETH_P_PBB_I:16, IPcp:3, IDei:1, IUca:1, IRsrv:3, ISid:24>>.
 
 %%
 %% MPLS
