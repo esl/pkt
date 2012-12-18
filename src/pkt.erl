@@ -395,8 +395,9 @@ ether(#ether{
 %%
 %% PBB
 %%
-pbb(<<Dhost:6/bytes, Shost:6/bytes, ?ETH_P_PBB_B:16, BPcp:3, BDei:1, BVid:12,
-      ?ETH_P_PBB_I:16, IPcp:3, IDei:1, IUca:1, IRsrv:3, ISid:24,
+pbb(<<Dhost:6/bytes, Shost:6/bytes,
+      ?ETH_P_PBB_B:16, BPcp:3, BDei:1, BVid:12/bits,
+      ?ETH_P_PBB_I:16, IPcp:3, IDei:1, IUca:1, IRsrv:3, ISid:3/bytes,
       Payload/binary>>) ->
     {#pbb{
         b_dhost = Dhost,
@@ -417,8 +418,9 @@ pbb(#pbb{b_dhost = Dhost, b_shost = Shost,
          b_pcp = BPcp, b_dei = BDei, b_vid = BVid,
          i_pcp = IPcp, i_dei = IDei, i_uca = IUca,
          i_reserved = IRsrv, i_sid = ISid}) ->
-    <<Dhost:6/bytes, Shost:6/bytes, ?ETH_P_PBB_B:16, BPcp:3, BDei:1, BVid:12,
-      ?ETH_P_PBB_I:16, IPcp:3, IDei:1, IUca:1, IRsrv:3, ISid:24>>.
+    <<Dhost:6/bytes, Shost:6/bytes,
+      ?ETH_P_PBB_B:16, BPcp:3, BDei:1, BVid:12/bits,
+      ?ETH_P_PBB_I:16, IPcp:3, IDei:1, IUca:1, IRsrv:3, ISid:3/bytes>>.
 
 %%
 %% MPLS

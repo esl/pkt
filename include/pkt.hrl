@@ -158,21 +158,24 @@
           crc = 0
          }).
 
+%% According to:
+%% https://sites.google.com/site/amitsciscozone/home/vpls/pbb-vpls
+%% http://en.wikipedia.org/wiki/IEEE_802.1ah-2008
 -record(pbb, {
           %% Backbone
-          b_dhost = <<0,0,0,0,0,0>>, %% Destination Address
-          b_shost = <<0,0,0,0,0,0>>, %% Source Address
+          b_dhost = <<0,0,0,0,0,0>>,     %% Destination Address
+          b_shost = <<0,0,0,0,0,0>>,     %% Source Address
           b_type = ?ETH_P_PBB_B,
-          b_pcp,                     %% Priority Code Point
-          b_dei,                     %% Drop Eligibility Identifier
-          b_vid = 0,                 %% VLAN Identifier
+          b_pcp = 0,                     %% Priority Code Point
+          b_dei = 0,                     %% Drop Eligibility Identifier
+          b_vid = <<0:12>>,              %% VLAN Identifier
           %% Service Instance
           i_type = ?ETH_P_PBB_I,
-          i_pcp,                     %% Priority Code Point
-          i_dei,                     %% Drop Eligibility Identifier
-          i_uca,                     %% Use Customer Addresses
-          i_reserved = <<0:3>>,
-          i_sid                      %% Service Instance VLAN ID
+          i_pcp = 0,                     %% Priority Code Point
+          i_dei = 0,                     %% Drop Eligibility Identifier
+          i_uca = 0,                     %% Use Customer Addresses
+          i_reserved = 0,
+          i_sid = <<0:24>>               %% Service Instance VLAN ID
          }).
 
 -record(ieee802_1q_tag, {
