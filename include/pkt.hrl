@@ -17,8 +17,8 @@
 -define(ETH_P_MPLS_UNI,   16#8847).
 -define(ETH_P_MPLS_MULTI, 16#8848).
 -define(ETH_P_ALL,        16#0300).
--define(ETH_PBB,          16#88A8).
--define(ETH_PBB_SERVICE_ENCAP, 16#88E7).
+-define(ETH_P_PBB_B,      16#88A8).
+-define(ETH_P_PBB_I,      16#88E7).
 
 -define(ARPHRD_ETHER, 1).
 -define(ARPHRD_IEEE80211, 801).
@@ -158,26 +158,22 @@
           crc = 0
          }).
 
-%% A ether header for PBB needs http://en.wikipedia.org/wiki/IEEE_802.1ah-2008
-%% It is merged together with service encapsulation header which follows it
-%% normally, to simplify decoding and encoding
-%% see http://www.carrierethernetstudyguide.org/MEF SG/pages/2transport/studyguide_2-1-1-3.html
--record(pbb_ether, {
-      dhost = <<0,0,0,0,0,0>>
-      , shost = <<0,0,0,0,0,0>>
-      , type = ?ETH_PBB
-      , b_tag          % B-TAG
-      , b_vid = 0      % B-VID, backbone VLAn indicator (12 bit)
-      %%-------------
-      %% A service encapsulation header for PBB
-      %% merged with ethernet PBB header for simplicity
-      %%-------------
-      , encap_type = ?ETH_PBB_SERVICE_ENCAP
-      , encap_flag_pcp      % prio, drop eligible indicator (DEI), no customer address (NCA)
-      , encap_flag_dei
-      , encap_flag_reserved
-      , encap_i_sid         % Service Instance VLAN ID (24 bit)
-     }).
+-record(pbb, {
+          %% Backbone
+          b_dhost = <<0,0,0,0,0,0>>, %% Destination Address
+          b_shost = <<0,0,0,0,0,0>>, %% Source Address
+          b_type = ?ETH_P_PBB_B,
+          b_pcp,                     %% Priority Code Point
+          b_dei,                     %% Drop Eligibility Identifier
+          b_vid = 0,                 %% VLAN Identifier
+          %% Service Instance
+          i_type = ?ETH_P_PBB_I,
+          i_pcp,                     %% Priority Code Point
+          i_dei,                     %% Drop Eligibility Identifier
+          i_uca,                     %% Use Customer Addresses
+          i_reserved = <<0:3>>,
+          i_sid                      %% Service Instance VLAN ID
+         }).
 
 -record(ieee802_1q_tag, {
           pcp = 0,
