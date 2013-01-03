@@ -220,13 +220,15 @@ decapsulate({ipv6, Data}, Packet) when byte_size(Data) >= ?IPV6HDRLEN ->
     decapsulate({ipv6_proto(Hdr#ipv6.next), Payload}, [Hdr|Packet]);
 
 %% TODO: introduce separate headers for various IPv6 options, parse separately
-decapsulate({IPv6Header, Data}, Packet) when IPv6Header =:= ipv6_hdr_hop_by_hop;
-                                             IPv6Header =:= ipv6_hdr_routing;
-                                             IPv6Header =:= ipv6_hdr_fragments;
-                                             IPv6Header =:= ipv6_hdr_dest_opts;
-                                             IPv6Header =:= ipv6_hdr_no_next ->
+decapsulate({IPv6Header, Data}, Packet)
+  when IPv6Header =:= ipv6_hdr_hop_by_hop;
+       IPv6Header =:= ipv6_hdr_routing;
+       IPv6Header =:= ipv6_hdr_fragments;
+       IPv6Header =:= ipv6_hdr_dest_opts ->
     {Hdr, Payload} = ipv6_header(IPv6Header, Data),
     decapsulate({ipv6_proto(Hdr#ipv6_header.next), Payload}, [Hdr|Packet]);
+decapsulate({ipv6_hdr_no_next, Payload}, Packet) ->
+    decapsulate(stop, [Payload | Packet]);
 
 %% GRE
 decapsulate({gre, Data}, Packet) when byte_size(Data) >= ?GREHDRLEN ->
