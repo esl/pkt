@@ -469,7 +469,7 @@ ieee802_1q_tag(#ieee802_1q_tag{pcp = PCP,
                                cfi = CFI,
                                vid = VID,
                                ether_type = EtherType}) ->
-    <<PCP:3, CFI:1, VID/bits, EtherType:16>>;
+    <<PCP:3, CFI:1, VID:12/bits, EtherType:16>>;
 ieee802_1q_tag(<<PCP:3, CFI:1, VID:12/bits, EtherType:16, Payload/binary>>) ->
     {#ieee802_1q_tag{pcp = PCP,
                      cfi = CFI,
