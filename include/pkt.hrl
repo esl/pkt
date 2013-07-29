@@ -151,6 +151,8 @@
           family = ?PF_INET
          }).
 
+%% If the frame is tagged with a IEEE 802.1Q tag the type fileds is used as
+%% a TPID of 802.1Q tag. This means that allowed value for the field is 0x8100.
 -record(ether, {
           dhost = <<0,0,0,0,0,0>>,
           shost = <<0,0,0,0,0,0>>,
@@ -178,6 +180,9 @@
           i_sid = <<0:24>>               %% Service Instance VLAN ID
          }).
 
+%% If the frame is tagged with a IEEE 802.1Q tag the ether_type does NOT refers
+%% to the TPID but to the EtherType/Length field that is moved behind the tag.
+%% The type field from ether record plays the role of TPID then.
 -record(ieee802_1q_tag, {
           pcp = 0,
           cfi = 0,
