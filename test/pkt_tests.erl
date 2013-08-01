@@ -1,12 +1,11 @@
 -module(pkt_tests).
 
 -include_lib("eunit/include/eunit.hrl").
--include("../include/pkt.hrl").
-%%-include("pkt.hrl").
+-include("pkt.hrl").
 
 %% Tests generators ------------------------------------------------------------
 
-encapsulate_test_() ->
+encapsulate_decapsulate_test_() ->
     {setup,
      fun setup/0,
      fun(_) -> ok end,
@@ -68,8 +67,17 @@ add_layer_header(internet, none, _Payload) ->
                                        #icmp{},
                                        generate_binary(1400)]);
 add_layer_header(internet, Proto, Payload) ->
-    %% TODO: Add support for ipv6
-    add_layer_header(link, ?ETH_P_IP, [#ipv4{p = Proto} | Payload]);
+    Headers = [ipv4, ipv6],
+    case lists:nth(random:uniform(length(Headers)), Headers) of
+        ipv4 ->
+            add_layer_header(link, ?ETH_P_IP, [#ipv4{p = Proto} | Payload]);
+        ipv6 ->
+            add_layer_header(link, ?ETH_P_IPV6, [#ipv6{next = Proto,
+                                                       hop = 64,
+                                                       saddr = <<0:112, 1:16>>,
+                                                       daddr = <<0:112, 1:16>>}
+                                                 | Payload])
+    end;
 add_layer_header(link, EtherType, Payload) ->
     %% TODO: Add support for 802.1ad (http://en.wikipedia.org/wiki/802.1ad)
     Headers = [ieee802_1q, ether],
@@ -98,6 +106,8 @@ restore_computed_fields([#icmp{} = IcmpHeader | Rest], Packet) ->
     restore_computed_fields(Rest, [IcmpHeader#icmp{checksum = 0} | Packet]);
 restore_computed_fields([#ipv4{} = IPv4Header | Rest], Packet) ->
     restore_computed_fields(Rest, [IPv4Header#ipv4{len = 20, sum = 0} | Packet]);
+restore_computed_fields([#ipv6{} = IPv6Header | Rest], Packet) ->
+    restore_computed_fields(Rest, [IPv6Header#ipv6{len = 40} | Packet]);
 restore_computed_fields([Header | Rest], Packet) ->
     restore_computed_fields(Rest, [Header | Packet]).
 
