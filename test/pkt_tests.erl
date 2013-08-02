@@ -24,20 +24,20 @@ encapsulate_decapsulate_test_() ->
 
 encapsulate() ->
     [?assert(is_binary(pkt:encapsulate(generate_packet_model())))
-     || _ <- lists:seq(1, 10)].
+     || _ <- lists:seq(1, 100)].
 
 decapsulate() ->
     [begin
          BinaryPacket = pkt:encapsulate(generate_packet_model()),
          ?assert(is_list(pkt:decapsulate(BinaryPacket)))
-     end || _ <- lists:seq(1, 10)].
+     end || _ <- lists:seq(1, 100)].
 
 encapsulate_decapsulate() ->
     [begin
          PacketModel = generate_packet_model(),
          Decapsulated = pkt:decapsulate(pkt:encapsulate(PacketModel)),
          ?assertEqual(PacketModel, restore_computed_fields(Decapsulated))
-     end || _ <- lists:seq(1, 10)].
+     end || _ <- lists:seq(1, 100)].
 
 %% Fixtures -------------------------------------------------------------------
 
@@ -47,11 +47,11 @@ setup() ->
 %% Helper functions ------------------------------------------------------------
 
 generate_packet_model() ->
-    add_layer_header(transport, generate_binary(1400)).
+    add_layer_header(transport, generate_payload()).
 
 %% @private Add a TCP/IP model transport layer header to the payload.
 add_layer_header(transport, Payload) ->
-    Headers = [tcp, udp, none],
+    Headers = [tcp, udp, none, none],
     case lists:nth(random:uniform(length(Headers)), Headers) of
         tcp ->
             add_layer_header(internet, ?IPPROTO_TCP, [#tcp{} , Payload]);
@@ -63,9 +63,28 @@ add_layer_header(transport, Payload) ->
 
 %% @ private Add a header for the specified TCP/IP model layer.
 add_layer_header(internet, none, _Payload) ->
-    add_layer_header(link, ?ETH_P_IP, [#ipv4{p = ?IPPROTO_ICMP},
-                                       #icmp{},
-                                       generate_binary(1400)]);
+    Headers = [icmp, icmpv6, ipv6_no_next],
+    case lists:nth(random:uniform(length(Headers)), Headers) of
+        icmp ->
+            add_layer_header(link, ?ETH_P_IP, [#ipv4{p = ?IPPROTO_ICMP},
+                                               #icmp{},
+                                               generate_payload()]);
+        icmpv6 ->
+            add_layer_header(link, ?ETH_P_IPV6, [#ipv6{next = ?IPPROTO_ICMPV6,
+                                                       hop = 64,
+                                                       saddr = <<0:112, 1:16>>,
+                                                       daddr = <<0:112, 1:16>>},
+                                                 #icmpv6{},
+                                                 {unsupported,
+                                                  generate_payload()}]);
+        ipv6_no_next ->
+            add_layer_header(link, ?ETH_P_IPV6,
+                             [#ipv6{next = ?IPV6_HDR_NO_NEXT_HEADER,
+                                    hop = 64,
+                                    saddr = <<0:112, 1:16>>,
+                                    daddr = <<0:112, 1:16>>},
+                              generate_payload()])
+    end;
 add_layer_header(internet, Proto, Payload) ->
     Headers = [ipv4, ipv6],
     case lists:nth(random:uniform(length(Headers)), Headers) of
@@ -104,6 +123,8 @@ restore_computed_fields([#udp{} = UdpHeder | Rest], Packet) ->
     restore_computed_fields(Rest, [UdpHeder#udp{sum = 0, ulen = 8} | Packet]);
 restore_computed_fields([#icmp{} = IcmpHeader | Rest], Packet) ->
     restore_computed_fields(Rest, [IcmpHeader#icmp{checksum = 0} | Packet]);
+restore_computed_fields([#icmpv6{} = Icmpv6Header | Rest], Packet) ->
+    restore_computed_fields(Rest, [Icmpv6Header#icmpv6{checksum = 0} | Packet]);
 restore_computed_fields([#ipv4{} = IPv4Header | Rest], Packet) ->
     restore_computed_fields(Rest, [IPv4Header#ipv4{len = 20, sum = 0} | Packet]);
 restore_computed_fields([#ipv6{} = IPv6Header | Rest], Packet) ->
@@ -111,6 +132,13 @@ restore_computed_fields([#ipv6{} = IPv6Header | Rest], Packet) ->
 restore_computed_fields([Header | Rest], Packet) ->
     restore_computed_fields(Rest, [Header | Packet]).
 
-%% @private Generate random binary of given lenght in bytes.
-generate_binary(Length) ->
-    << <<(random:uniform(255))>> || _ <- lists:seq(1, Length) >>.
+%% @priavet Generate random binary payload.
+generate_payload() ->
+    generate_payload(random:uniform(1000) - 1).
+
+%% @private Generate random binary payload of the given max lenght in bytes.
+generate_payload(0) ->
+  <<>>;
+generate_payload(MexLength) ->
+    << <<(random:uniform(255))>>
+       || _ <- lists:seq(1, random:uniform(MexLength) div 8) >>.
