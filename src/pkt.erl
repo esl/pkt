@@ -132,7 +132,10 @@ encapsulate([#arp{} = ARP | Packet], Binary) ->
 encapsulate([{unsupported, Unsupported} | Packet], Binary) ->
     encapsulate(unsupported, Packet, << Unsupported/binary, Binary/binary >>);
 encapsulate([{truncated, Truncated} | Packet], Binary) ->
-    encapsulate(truncated, Packet, << Truncated/binary, Binary/binary >>).
+    encapsulate(truncated, Packet, << Truncated/binary, Binary/binary >>);
+encapsulate([#ipv6{} | _] = Packet, Binary) ->
+    encapsulate(ipv6_hdr_no_next, Packet, Binary).
+
 
 -spec encapsulate(ether_type() | proto(), packet(), binary()) -> binary().
 encapsulate(_, [], Binary) ->
