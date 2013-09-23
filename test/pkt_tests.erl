@@ -3,10 +3,19 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("pkt.hrl").
 
--define(INTERNET_NEXT_HEADERS, [link, mpls]).
+-define(TRANSPORT_LAYER_HEADERS, [tcp, udp, none]).
+-define(TRANSPORT_NEXT_HEADERS(UpperProtocol),
+        case UpperProtocol of
+            none ->
+                [icmp, icmpv6, ipv6_no_next];
+            _ ->
+                [ipv4, ipv6]
+        end).
 
+-define(INTERNET_NEXT_HEADERS, [ether, ieee802_11q, mpls]).
+
+-define(MPLS_NEXT_HEADERS, ?INTERNET_NEXT_HEADERS -- [mpls]).
 -define(MPLS_LABEL_MAX, 16#FFFFF).
--define(MPLS_LOWER_HEADERS, [mpls, link]).
 -define(MPLS_ETHER_TYPES,
         [{unicast, ?ETH_P_MPLS_UNI}, {multicast, ?ETH_P_MPLS_MULTI}]).
 
@@ -53,86 +62,76 @@ setup() ->
 
 %% Helper functions ------------------------------------------------------------
 
+%% @private Generate random payload and randomly add subsequent TCP/IP model
+%% headers
 generate_packet_model() ->
-    add_layer_header(transport, generate_payload()).
+    add_header(random_list_element(?TRANSPORT_LAYER_HEADERS),
+               generate_payload()).
+    
+%% @private Add a Transport layer header (there can be no such header
+%% in a packet)
+add_header(TransportProtocol = tcp, Payload) ->
+    add_header({random_list_element(?TRANSPORT_NEXT_HEADERS(TransportProtocol)),
+                ?IPPROTO_TCP}, [#tcp{} , Payload]);
+add_header(TransportProtocol = udp, Payload) ->
+    add_header({random_list_element(?TRANSPORT_NEXT_HEADERS(TransportProtocol)),
+                ?IPPROTO_UDP}, [#udp{} , Payload]);
+add_header(TransportProtocol = none, Payload) ->
+    add_header({random_list_element(?TRANSPORT_NEXT_HEADERS(TransportProtocol)),
+                none}, Payload);
 
-%% @private Add a TCP/IP model transport layer header to the payload.
-add_layer_header(transport, Payload) ->
-    Headers = [tcp, udp, none, none],
-    case lists:nth(random:uniform(length(Headers)), Headers) of
-        tcp ->
-            add_layer_header(internet, ?IPPROTO_TCP, [#tcp{} , Payload]);
-        udp ->
-            add_layer_header(internet, ?IPPROTO_UDP, [#udp{} , Payload]);
-        none ->
-            add_layer_header(internet, none, <<>>)
-    end.
+%% @ private Add an Internet layer header
+add_header({icmp, none}, Payload) ->
+    add_header({random_list_element(?INTERNET_NEXT_HEADERS), ?ETH_P_IP},
+               [#ipv4{p = ?IPPROTO_ICMP}, #icmp{}, Payload]);
+add_header({icmpv6, none}, Payload) ->
+    add_header({random_list_element(?INTERNET_NEXT_HEADERS), ?ETH_P_IPV6},
+               [#ipv6{next = ?IPPROTO_ICMPV6,
+                      hop = 64,
+                      saddr = <<0:112, 1:16>>,
+                      daddr = <<0:112, 1:16>>},
+                #icmpv6{}, {unsupported, Payload}]);
+add_header({ipv6_no_next, none}, Payload) ->
+    add_header({random_list_element(?INTERNET_NEXT_HEADERS), ?ETH_P_IPV6},
+               [#ipv6{next = ?IPV6_HDR_NO_NEXT_HEADER,
+                      hop = 64,
+                      saddr = <<0:112, 1:16>>,
+                      daddr = <<0:112, 1:16>>},
+                Payload]);
+add_header({ipv4, UpperProtocol}, Payload) ->
+    add_header({random_list_element(?INTERNET_NEXT_HEADERS), ?ETH_P_IP},
+               [#ipv4{p = UpperProtocol} | Payload]);
+add_header({ipv6, UpperProtocol}, Payload) ->
+    add_header({random_list_element(?INTERNET_NEXT_HEADERS), ?ETH_P_IPV6},
+               [#ipv6{next = UpperProtocol,
+                      hop = 64,
+                      saddr = <<0:112, 1:16>>,
+                      daddr = <<0:112, 1:16>>}
+                | Payload]);
 
-%% @ private Add a header for the specified TCP/IP model layer.
-add_layer_header(internet, none, _Payload) ->
-    Headers = [icmp, icmpv6, ipv6_no_next],
-    case lists:nth(random:uniform(length(Headers)), Headers) of
-        icmp ->
-            add_layer_header(link, ?ETH_P_IP, [#ipv4{p = ?IPPROTO_ICMP},
-                                               #icmp{},
-                                               generate_payload()]);
-        icmpv6 ->
-            add_layer_header(link, ?ETH_P_IPV6, [#ipv6{next = ?IPPROTO_ICMPV6,
-                                                       hop = 64,
-                                                       saddr = <<0:112, 1:16>>,
-                                                       daddr = <<0:112, 1:16>>},
-                                                 #icmpv6{},
-                                                 {unsupported,
-                                                  generate_payload()}]);
-        ipv6_no_next ->
-            add_layer_header(link, ?ETH_P_IPV6,
-                             [#ipv6{next = ?IPV6_HDR_NO_NEXT_HEADER,
-                                    hop = 64,
-                                    saddr = <<0:112, 1:16>>,
-                                    daddr = <<0:112, 1:16>>},
-                              generate_payload()])
-    end;
-add_layer_header(internet, Proto, Payload) ->
-    Headers = [ipv4, ipv6],
-    case lists:nth(random:uniform(length(Headers)), Headers) of
-        ipv4 ->
-            add_layer_header(list_random_element(?INTERNET_NEXT_HEADERS),
-                             ?ETH_P_IP, [#ipv4{p = Proto} | Payload]);
-        ipv6 ->
-            add_layer_header(list_random_element(?INTERNET_NEXT_HEADERS),
-                             ?ETH_P_IPV6, [#ipv6{next = Proto,
-                                                 hop = 64,
-                                                 saddr = <<0:112, 1:16>>,
-                                                 daddr = <<0:112, 1:16>>}
-                                           | Payload])
-    end;
-
-add_layer_header(mpls, EtherType, [#mpls_tag{stack = Stack} = MPLSTag | Payload]) ->
+%% @ private Add an "2.5 layer" header
+%% NOTICE: Maximum 2 MPLS headers will be added
+add_header({mpls, EtherType}, [#mpls_tag{stack = Stack} = MPLSTag | Payload]) ->
     StackEntry = #mpls_stack_entry{
       label = <<(random:uniform(?MPLS_LABEL_MAX - 15) + 15):20>>},
-    add_layer_header(link,
-                     EtherType,
-                     [MPLSTag#mpls_tag{stack = [StackEntry | Stack]} | Payload]);
-add_layer_header(mpls, _UpperProtocol, Payload) ->
+    add_header({link, EtherType},
+               [MPLSTag#mpls_tag{stack = [StackEntry | Stack]} | Payload]);
+add_header({mpls, _UpperProtocol}, Payload) ->
     StackEntry = #mpls_stack_entry{
       label = <<(random:uniform(?MPLS_LABEL_MAX - 15) + 15):20>>, bottom = 1},
-    {Mode, EtherType} =  list_random_element(?MPLS_ETHER_TYPES),
-    add_layer_header(list_random_element(?MPLS_LOWER_HEADERS),
-                     EtherType,
-                     [#mpls_tag{stack = [StackEntry], mode = Mode} | Payload]);
+    {Mode, EtherType} =  random_list_element(?MPLS_ETHER_TYPES),
+    add_header({random_list_element(?MPLS_NEXT_HEADERS), EtherType},
+               [#mpls_tag{stack = [StackEntry], mode = Mode} | Payload]);
 
-add_layer_header(link, EtherType, Payload) ->
-    %% TODO: Add support for 802.1ad (http://en.wikipedia.org/wiki/802.1ad)
-    Headers = [ieee802_1q, ether],
-    case lists:nth(random:uniform(length(Headers)), Headers) of
-        ieee802_1q -> [#ether{type = ?ETH_P_802_1Q},
-                       #ieee802_1q_tag{vid = <<(random:uniform(16#FFF)-1):12>>,
-                                       ether_type = EtherType}
-                       | Payload];
-
-        ether ->
-            [#ether{type = EtherType} | Payload]
-    end.
+%% @ private Add a Link layer header
+%% TODO: Add support for 802.1ad (http://en.wikipedia.org/wiki/802.1ad)
+add_header({ether, EtherType}, Payload) ->
+    [#ether{type = EtherType} | Payload];
+add_header({ieee802_11q, EtherType}, Payload) ->
+    add_header({ether, ?ETH_P_802_1Q},
+               [#ieee802_1q_tag{vid = <<(random:uniform(16#FFF)-1):12>>,
+                                ether_type = EtherType}
+                | Payload]).
 
 %% @private Restores fields that are computed during packet encapsulation to
 %% their default values.
@@ -168,5 +167,5 @@ generate_payload(MexLength) ->
        || _ <- lists:seq(1, random:uniform(MexLength) div 8) >>.
 
 %% @private Return random element of a list
-list_random_element(List) ->
+random_list_element(List) ->
     lists:nth(random:uniform(length(List)), List).
