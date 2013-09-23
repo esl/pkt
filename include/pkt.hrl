@@ -201,8 +201,7 @@
 
 -record(mpls_tag, {
           stack = [#mpls_stack_entry{}] :: [#mpls_stack_entry{}],
-          mode = unicast :: unicast | multicast,
-          ether_type = ?ETH_P_IP
+          mode = unicast :: unicast | multicast
          }).
 
 -record(arp, {
