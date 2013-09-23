@@ -3,6 +3,13 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("pkt.hrl").
 
+-define(INTERNET_NEXT_HEADERS, [link, mpls]).
+
+-define(MPLS_LABEL_MAX, 16#FFFFF).
+-define(MPLS_LOWER_HEADERS, [mpls, link]).
+-define(MPLS_ETHER_TYPES,
+        [{unicast, ?ETH_P_MPLS_UNI}, {multicast, ?ETH_P_MPLS_MULTI}]).
+
 %% Tests generators ------------------------------------------------------------
 
 encapsulate_decapsulate_test_() ->
@@ -89,14 +96,31 @@ add_layer_header(internet, Proto, Payload) ->
     Headers = [ipv4, ipv6],
     case lists:nth(random:uniform(length(Headers)), Headers) of
         ipv4 ->
-            add_layer_header(link, ?ETH_P_IP, [#ipv4{p = Proto} | Payload]);
+            add_layer_header(list_random_element(?INTERNET_NEXT_HEADERS),
+                             ?ETH_P_IP, [#ipv4{p = Proto} | Payload]);
         ipv6 ->
-            add_layer_header(link, ?ETH_P_IPV6, [#ipv6{next = Proto,
-                                                       hop = 64,
-                                                       saddr = <<0:112, 1:16>>,
-                                                       daddr = <<0:112, 1:16>>}
-                                                 | Payload])
+            add_layer_header(list_random_element(?INTERNET_NEXT_HEADERS),
+                             ?ETH_P_IPV6, [#ipv6{next = Proto,
+                                                 hop = 64,
+                                                 saddr = <<0:112, 1:16>>,
+                                                 daddr = <<0:112, 1:16>>}
+                                           | Payload])
     end;
+
+add_layer_header(mpls, EtherType, [#mpls_tag{stack = Stack} = MPLSTag | Payload]) ->
+    StackEntry = #mpls_stack_entry{
+      label = <<(random:uniform(?MPLS_LABEL_MAX - 15) + 15):20>>},
+    add_layer_header(link,
+                     EtherType,
+                     [MPLSTag#mpls_tag{stack = [StackEntry | Stack]} | Payload]);
+add_layer_header(mpls, _UpperProtocol, Payload) ->
+    StackEntry = #mpls_stack_entry{
+      label = <<(random:uniform(?MPLS_LABEL_MAX - 15) + 15):20>>, bottom = 1},
+    {Mode, EtherType} =  list_random_element(?MPLS_ETHER_TYPES),
+    add_layer_header(list_random_element(?MPLS_LOWER_HEADERS),
+                     EtherType,
+                     [#mpls_tag{stack = [StackEntry], mode = Mode} | Payload]);
+
 add_layer_header(link, EtherType, Payload) ->
     %% TODO: Add support for 802.1ad (http://en.wikipedia.org/wiki/802.1ad)
     Headers = [ieee802_1q, ether],
@@ -142,3 +166,7 @@ generate_payload(0) ->
 generate_payload(MexLength) ->
     << <<(random:uniform(255))>>
        || _ <- lists:seq(1, random:uniform(MexLength) div 8) >>.
+
+%% @private Return random element of a list
+list_random_element(List) ->
+    lists:nth(random:uniform(length(List)), List).
