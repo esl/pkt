@@ -155,8 +155,8 @@ encapsulate(Proto, [#ipv6{} = IPv6 | Packet], Binary) ->
 encapsulate(EtherType, [#ieee802_1q_tag{} = VlanTag | Packet], Binary) ->
     TagBinary = ieee802_1q_tag(fill_ether_type(VlanTag, EtherType)),
     encapsulate(ieee802_1q_tag, Packet, << TagBinary/binary, Binary/binary >>);
-encapsulate(EtherType, [#mpls_tag{mode = Mode} = MPLSTag | Packet], Binary) ->
-    TagBinary = mpls_tag(fill_ether_type(MPLSTag, EtherType)),
+encapsulate(_UpperProtocol, [#mpls_tag{mode = Mode} = MPLSTag | Packet], Binary) ->
+    TagBinary = mpls_tag(MPLSTag),
     encapsulate({mpls_tag, Mode}, Packet, << TagBinary/binary, Binary/binary >>);
 encapsulate(EtherType, [#ether{} = Ether | Packet], Binary) ->
     EtherBinary = ether(fill_ether_type(Ether, EtherType)),
@@ -208,9 +208,9 @@ decapsulate({ieee802_1q_tag, Data}, Packet) ->
     decapsulate({EtherType, Payload}, [Tag|Packet]);
 decapsulate({{mpls_tag, Mode}, Data}, Packet) ->
     {RawTag, Payload} = mpls_tag(Data),
+    UpperProtocol = mpls_payload(Payload),
     Tag = RawTag#mpls_tag{mode = Mode},
-    EtherType = ether_type(Tag#mpls_tag.ether_type),
-    decapsulate({EtherType, Payload}, [Tag|Packet]);
+    decapsulate({UpperProtocol, Payload}, [Tag|Packet]);
 
 decapsulate({arp, Data}, Packet) when byte_size(Data) >= 28 -> %% IPv4 ARP
     {Hdr, Payload} = arp(Data),
@@ -326,8 +326,6 @@ icmpv6_payload_type(_) -> unsupported.
 
 fill_ether_type(#ieee802_1q_tag{ether_type = OldType} = Tag, EtherType) ->
     Tag#ieee802_1q_tag{ether_type = ether_type_code(EtherType, OldType)};
-fill_ether_type(#mpls_tag{ether_type = OldType} = Tag, EtherType) ->
-    Tag#mpls_tag{ether_type = ether_type_code(EtherType, OldType)};
 fill_ether_type(#ether{type = OldType} = Ether, EtherType) ->
     Ether#ether{type = ether_type_code(EtherType, OldType)}.
 
@@ -430,10 +428,9 @@ pbb(#pbb{b_dhost = Dhost, b_shost = Shost,
 %%
 %% MPLS
 %%
-mpls_tag(#mpls_tag{stack = Stack,
-                   ether_type = EtherType}) ->
+mpls_tag(#mpls_tag{stack = Stack}) ->
     StackBin = << <<(mpls_stack_entry(SE))/binary>> || SE <- Stack >>,
-    <<(set_bottom_bit(StackBin))/binary, EtherType:16>>;
+    <<(set_bottom_bit(StackBin))/binary>>;
 mpls_tag(Binary) when is_binary(Binary) ->
     decode_mpls(Binary, []).
 
@@ -449,21 +446,31 @@ set_bottom_bit(MPLSStack) ->
     <<Start:StartLen/bits, _:1, TTL:8>> = MPLSStack,
     <<Start:StartLen/bits, 1:1, TTL:8>>.
 
-decode_mpls(<<Label:20, QOS:1, PRI:1, ECN:1, Bottom:1, TTL:8, Rest/binary>>, Acc) ->
-    Entry = #mpls_stack_entry{label = Label,
-                              qos = QOS,
-                              pri = PRI,
-                              ecn = ECN,
-                              ttl = TTL},
-    case Bottom of
-        0 ->
-            decode_mpls(Rest, [Entry|Acc]);
-        1 ->
-            <<EtherType:16, Payload/binary>> = Rest,
-            MPLSTag = #mpls_tag{stack = lists:reverse(Acc),
-                                ether_type = EtherType},
-            {MPLSTag, Payload}
-    end.
+decode_mpls(<<Label:20/bitstring, QOS:1, PRI:1, ECN:1, Bottom:1, TTL:8,
+              Rest/binary>>, Acc) when Bottom =:= 0 ->
+    decode_mpls(Rest, [#mpls_stack_entry{label = Label,
+                                         qos = QOS,
+                                         pri = PRI,
+                                         ecn = ECN,
+                                         ttl = TTL} | Acc]);
+decode_mpls(<<Label:20/bitstring, QOS:1, PRI:1, ECN:1, Bottom:1, TTL:8,
+              Payload/binary>>,
+            Acc) when Bottom =:= 1->
+    StackEntry = #mpls_stack_entry{label = Label,
+                                   qos = QOS,
+                                   pri = PRI,
+                                   ecn = ECN,
+                                   ttl = TTL,
+                                   bottom = Bottom},
+    {#mpls_tag{stack = lists:reverse([StackEntry | Acc])}, Payload}.
+
+%% TODO: Add support for other MPLS payloads.
+mpls_payload(<<4:4, _Rest/bitstring>>) ->
+    ipv4;
+mpls_payload(<<6:4, _Rest/bitstring>>) ->
+    ipv6;
+mpls_payload(_) ->
+    unsupported.
 
 %%
 %% 802.1Q
