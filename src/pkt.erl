@@ -245,8 +245,8 @@ decapsulate({udp, Data}, Packet) when byte_size(Data) >= ?UDPHDRLEN ->
     {Hdr, Payload} = udp(Data),
     decapsulate(stop, [Payload, Hdr|Packet]);
 decapsulate({sctp, Data}, Packet) when byte_size(Data) >= 12 ->
-    {Hdr, Payload} = sctp(Data),
-    decapsulate(stop, [Payload, Hdr|Packet]);
+    Hdr = sctp(Data),
+    decapsulate(stop, [Hdr|Packet]);
 decapsulate({icmp, Data}, Packet) when byte_size(Data) >= ?ICMPHDRLEN ->
     {Hdr, Payload} = icmp(Data),
     decapsulate(stop, [Payload, Hdr|Packet]);
@@ -655,39 +655,44 @@ options(Offset, Payload) ->
 %%
 %% SCTP
 %%
-sctp(<<SPort:16, DPort:16, VTag:32, Sum:32, Payload/binary>>) ->
-    {#sctp{sport = SPort, dport = DPort, vtag = VTag, sum = Sum,
-           chunks=sctp_chunk_list_gen(Payload)}, []}.
+sctp(<<SPort:16, DPort:16, VerificationTag:32, CheckSum:32, Payload/binary>>) ->
+    #sctp{sport = SPort, dport = DPort, vtag = VerificationTag, sum = CheckSum,
+          chunks = sctp_chunks(Payload)};
+sctp(#sctp{sport = SPort, dport = DPort, vtag = VerificationTag, sum = CheckSum,
+           chunks = Chunks}) ->
+    <<SPort:16, DPort:16, VerificationTag:32, CheckSum:32,
+      (sctp_chunks(Chunks))/binary>>.
 
-sctp_chunk_list_gen(Payload) ->
-    sctp_chunk_list_gen(Payload, []).
+sctp_chunks(Chunks) when is_binary(Chunks) ->
+    sctp_chunks(Chunks, []);
+sctp_chunks(Chunks) when is_list(Chunks) ->
+    << <<(sctp_chunk(Ch))/binary>> || Ch <- Chunks >>.
 
-sctp_chunk_list_gen(Payload, List) ->
-    %% chop the first chunk off the payload
-    case sctp_chunk_chop(Payload) of
-        {Chunk, Remainder} ->
-            %% loop
-            sctp_chunk_list_gen(Remainder, [Chunk|List]);
-        [] ->
-            List
-    end.
+%% The padding MUST NOT be longer that 3 bytes.
+sctp_chunks(Padding, ChunksAcc) when byte_size(Padding) =< 3  ->
+    lists:reverse(ChunksAcc);
+sctp_chunks(<<_:16, ChunkLength:16, _/binary>> = BinaryChunks, ChunksAcc) ->
+    ChunkLengthInBits = ChunkLength*8,
+    <<Chunk:ChunkLengthInBits/bits, BinaryChunksRemainder/binary>> = BinaryChunks,
+    sctp_chunks(BinaryChunksRemainder, [sctp_chunk(Chunk) | ChunksAcc]).
 
-sctp_chunk_chop(<<>>) ->
-    [];
-sctp_chunk_chop(<<Ctype:8, Cflags:8, Clen:16, Remainder/binary>>) ->
-    Payload = binary:part(Remainder, 0, Clen-4),
-    Tail = binary:part(Remainder, Clen-4, byte_size(Remainder)-(Clen-4)),
-    {sctp_chunk(Ctype, Cflags, Clen, Payload), Tail}.
-
-sctp_chunk(Ctype, Cflags, Clen, Payload) ->
-    #sctp_chunk{type=Ctype, flags=Cflags, len = Clen-4,
-                payload=sctp_chunk_payload(Ctype, Payload)}.
+sctp_chunk(<<Type:8, Flags:8, Length:16, Payload/binary>>) ->
+    #sctp_chunk{type = Type, flags = Flags, len = Length,
+                payload = sctp_chunk_payload(Type, Payload)};
+sctp_chunk(#sctp_chunk{type = Type, flags = Flags, len = Length,
+                              payload = Payload}) ->
+    BinaryPayload = align_binary_to_4_bytes(sctp_chunk_payload(Type, Payload)),
+    %% #sctp_chunk.len does not include 4 bytes of chunk header. It only
+    %% indicates the length of the header payload.
+    <<Type:8, Flags:8, Length:16, BinaryPayload/binary>>.
 
 sctp_chunk_payload(0, <<Tsn:32, Sid:16, Ssn:16, Ppi:32, Data/binary>>) ->
-    #sctp_chunk_data{tsn=Tsn, sid=Sid, ssn=Ssn, ppi=Ppi, data=Data};
+   #sctp_chunk_data{tsn = Tsn, sid = Sid, ssn = Ssn, ppi = Ppi, data = Data};
+sctp_chunk_payload(0, #sctp_chunk_data{tsn = Tsn, sid = Sid, ssn = Ssn,
+                                       ppi = Ppi, data = Data}) ->
+    <<Tsn:32, Sid:16, Ssn:16, Ppi:32, Data/binary>>;
 sctp_chunk_payload(_, Data) ->
     Data.
-
 
 %%
 %% UDP
@@ -954,6 +959,15 @@ find_ip([#ipv4{} = IP | _]) -> {ok, IP};
 find_ip([#ipv6{} = IP | _]) -> {ok, IP};
 find_ip([_ | Tail]) -> find_ip(Tail);
 find_ip([]) -> {error, no_ip}.
+
+align_binary_to_4_bytes(<<Binary/binary>>) ->
+    case byte_size(Binary) rem 4 of
+        0 ->
+            Binary;
+        BinarySizeInBytes ->
+            PaddingSizeInBits = (4 - BinarySizeInBytes) * 8,
+            <<Binary/binary, 0:PaddingSizeInBits>>
+    end.
 
 %%
 %% Datalink types
