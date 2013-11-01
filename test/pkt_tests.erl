@@ -3,7 +3,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("pkt.hrl").
 
--define(TRANSPORT_LAYER_HEADERS, [tcp, udp, none]).
+-define(TRANSPORT_LAYER_HEADERS, [tcp, udp, sctp, none]).
 -define(TRANSPORT_NEXT_HEADERS(UpperProtocol),
         case UpperProtocol of
             none ->
@@ -18,6 +18,8 @@
 -define(MPLS_LABEL_MAX, 16#FFFFF).
 -define(MPLS_ETHER_TYPES,
         [{unicast, ?ETH_P_MPLS_UNI}, {multicast, ?ETH_P_MPLS_MULTI}]).
+
+-define(SCTP_DATA_CHUNK_HEADER_SIZE, 16).
 
 %% Tests generators ------------------------------------------------------------
 
@@ -67,7 +69,7 @@ setup() ->
 generate_packet_model() ->
     add_header(random_list_element(?TRANSPORT_LAYER_HEADERS),
                generate_payload()).
-    
+
 %% @private Add a Transport layer header (there can be no such header
 %% in a packet)
 add_header(TransportProtocol = tcp, Payload) ->
@@ -79,6 +81,10 @@ add_header(TransportProtocol = udp, Payload) ->
 add_header(TransportProtocol = none, Payload) ->
     add_header({random_list_element(?TRANSPORT_NEXT_HEADERS(TransportProtocol)),
                 none}, Payload);
+add_header(TransportProtocol = sctp, Payload) ->
+    add_header({random_list_element(?TRANSPORT_NEXT_HEADERS(TransportProtocol)),
+                ?IPPROTO_SCTP},
+               [#sctp{chunks = [generate_sctp_data_chunk(Payload)]}]);
 
 %% @ private Add an Internet layer header
 add_header({icmp, none}, Payload) ->
@@ -169,3 +175,7 @@ generate_payload(MexLength) ->
 %% @private Return random element of a list
 random_list_element(List) ->
     lists:nth(random:uniform(length(List)), List).
+
+generate_sctp_data_chunk(Payload) ->
+    #sctp_chunk{len = byte_size(Payload) + ?SCTP_DATA_CHUNK_HEADER_SIZE,
+                payload = #sctp_chunk_data{data = Payload}}.
