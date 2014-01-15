@@ -179,3 +179,57 @@ random_list_element(List) ->
 generate_sctp_data_chunk(Payload) ->
     #sctp_chunk{len = byte_size(Payload) + ?SCTP_DATA_CHUNK_HEADER_SIZE,
                 payload = #sctp_chunk_data{data = Payload}}.
+
+pkt_test_() ->
+    [
+	makesum_1(),
+	makesum_2(),
+	makesum_4(),
+	makesum_8(),
+	makesum_16(),
+	makesum_32(),
+	makesum_64()
+    ].
+
+makesum_1() ->
+    ?_assertEqual(
+        3839,
+        pkt:makesum(<<16#F1>>)
+    ).
+
+makesum_2() ->
+    ?_assertEqual(
+        3597,
+        pkt:makesum(<<16#F1, 16#F2>>)
+    ).
+
+makesum_4() ->
+    ?_assertEqual(
+        6680,
+        pkt:makesum(<<16#F1, 16#F2, 16#F3, 16#F4>>)
+    ).
+
+makesum_8() ->
+    ?_assertEqual(
+        11304,
+        pkt:makesum(<<16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8>>)
+    ).
+
+makesum_16() ->
+    ?_assertEqual(
+        22608,
+        pkt:makesum(<<16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8, 16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8>>)
+    ).
+
+
+makesum_32() ->
+    ?_assertEqual(
+        45216,
+        pkt:makesum(<<16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8, 16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8, 16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8, 16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8 >>)
+    ).
+
+makesum_64() ->
+    ?_assertEqual(
+        24897,
+        pkt:makesum(<<16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8, 16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8, 16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8, 16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8, 16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8, 16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8, 16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8, 16#F1, 16#F2, 16#F3, 16#F4, 16#F5, 16#F6, 16#F7, 16#F8>>)
+    ).
