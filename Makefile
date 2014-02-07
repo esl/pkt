@@ -6,6 +6,11 @@ compile: rebar
 test: rebar
 	@./rebar skip_deps=true eunit
 
+speed_test: rebar clean compile
+	@erl -noshell -pa ebin/ \
+	     -eval 'pkt_checksum_speed_tests:run().' \
+	     -s init stop
+
 clean: rebar
 	@./rebar clean
 
