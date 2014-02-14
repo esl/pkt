@@ -105,11 +105,11 @@ encapsulate([#tcp{} = TCP | Packet], Binary) ->
     {ok, IP} = find_ip(Packet),
     TCPBinary = tcp(TCP#tcp{sum = makesum([IP, TCP, Binary])}),
     encapsulate(tcp, Packet, << TCPBinary/binary, Binary/binary >>);
-encapsulate([#udp{} = UDP0 | Packet], Binary) ->
+encapsulate([#udp{} = UDP | Packet], Binary) ->
     {ok, IP} = find_ip(Packet),
-    UDP = UDP0#udp{ulen = 8 + byte_size(Binary)},
-    UDPBinary = udp(UDP#udp{sum = makesum([IP, UDP, Binary])}),
-    encapsulate(udp, Packet, << UDPBinary/binary, Binary/binary >>);
+    UDPWithLength = fill_udp_length(UDP, Binary),
+    UDPBinary = construct_udp_binary(UDPWithLength, IP, Binary),
+    encapsulate(udp, Packet, UDPBinary);
 encapsulate([#sctp{} = SCTP | Packet], Binary) ->
     SCTPBinary = sctp(SCTP),
     encapsulate(sctp, Packet, << SCTPBinary/binary, Binary/binary >>);
@@ -135,7 +135,6 @@ encapsulate([{truncated, Truncated} | Packet], Binary) ->
     encapsulate(truncated, Packet, << Truncated/binary, Binary/binary >>);
 encapsulate([#ipv6{} | _] = Packet, Binary) ->
     encapsulate(ipv6_hdr_no_next, Packet, Binary).
-
 
 -spec encapsulate(ether_type() | proto(), packet(), binary()) -> binary().
 encapsulate(_, [], Binary) ->
@@ -702,6 +701,30 @@ udp(<<SPort:16, DPort:16, ULen:16, Sum:16, Payload/binary>>) ->
 udp(#udp{sport = SPort, dport = DPort, ulen = ULen, sum = Sum}) ->
     <<SPort:16, DPort:16, ULen:16, Sum:16>>.
 
+construct_udp_binary(UDP, IP, Payload) ->
+    PseudoHeader = construct_udp_pseudo_header_binary(IP, UDP),
+    IncompleteUDPHeader = construct_udp_header_binary_until_checksum(UDP),
+    Checksum = pkt_checksum:compute_internet_checksum(
+                 <<PseudoHeader/binary,
+                   IncompleteUDPHeader/binary,
+                   0:16,
+                   Payload/binary>>),
+    <<IncompleteUDPHeader/binary, Checksum:16, Payload/binary>>.
+
+construct_udp_pseudo_header_binary(#ipv4{saddr = SrcAddr, daddr = DstAddr},
+                                   #udp{ulen = DatagramLength}) ->
+    <<SrcAddr/binary, DstAddr/binary, 0, ?IPPROTO_UDP, DatagramLength:16>>;
+construct_udp_pseudo_header_binary(#ipv6{saddr = SrcAddr, daddr = DstAddr},
+                                   #udp{ulen = DatagramLength}) ->
+    <<SrcAddr/binary, DstAddr/binary, DatagramLength:32, 0:24, ?IPPROTO_UDP>>.
+
+construct_udp_header_binary_until_checksum(#udp{sport = SrcPort,
+                                                dport = DstPort,
+                                                ulen = DatagramLength}) ->
+    <<SrcPort:16, DstPort:16, DatagramLength:16>>.
+
+fill_udp_length(Header, Payload) ->
+    Header#udp{ulen = ?UDPHDRLEN + byte_size(Payload)}.
 
 %%
 %% ICMP
