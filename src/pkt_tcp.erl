@@ -6,6 +6,8 @@
 
 %%% API -------------------------------------------------------------------------
 
+-spec encapsulate(pkt:internet_header(), pkt:tcp(), TCPPayload :: binary())
+                 -> TCPBinary :: binary().
 encapsulate(IP, TCP, Payload) ->
     UntilChecksum = construct_tcp_binary_until_checksum(TCP),
     BehindChecksum = construct_tcp_binary_behind_checksum(TCP, Payload),
@@ -17,6 +19,7 @@ encapsulate(IP, TCP, Payload) ->
                                                         BehindChecksum/binary>>),
     <<UntilChecksum/binary, Checksum:16, BehindChecksum/binary>>.
 
+-spec decapsulate(TCPBinary :: binary()) -> {pkt:tcp(), TCPPayload :: binary()}.
 decapsulate(<<SPort:16, DPort:16,
               SeqNo:32,
               AckNo:32,
