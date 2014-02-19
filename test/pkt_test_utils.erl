@@ -38,7 +38,12 @@ generate_partial_packet_model(udp_ipv4) ->
     [#ipv4{}, #udp{}, generate_packet_payload()];
 generate_partial_packet_model(udp_ipv6) ->
     [#ipv6{saddr = <<0:112, 1:16>>, daddr = <<0:112, 1:16>>},
-     #udp{}, generate_packet_payload()].
+     #udp{}, generate_packet_payload()];
+generate_partial_packet_model(tcp_ipv4) ->
+    [#ipv4{}, #tcp{}, generate_packet_payload()];
+generate_partial_packet_model(tcp_ipv6) ->
+    [#ipv6{saddr = <<0:112, 1:16>>, daddr = <<0:112, 1:16>>},
+     #tcp{}, generate_packet_payload()].
 
 %% @doc Restores fields that are computed during packet encapsulation to
 %% their default values.
