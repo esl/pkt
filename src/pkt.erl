@@ -56,7 +56,6 @@
          ipv6_header/2,
          proto/1,
          tcp/1,
-         udp/1,
          dlt/1
         ]).
 
@@ -105,11 +104,10 @@ encapsulate([#tcp{} = TCP | Packet], Binary) ->
     {ok, IP} = find_ip(Packet),
     TCPBinary = tcp(TCP#tcp{sum = makesum([IP, TCP, Binary])}),
     encapsulate(tcp, Packet, << TCPBinary/binary, Binary/binary >>);
-encapsulate([#udp{} = UDP0 | Packet], Binary) ->
+encapsulate([#udp{} = UDP | Packet], Binary) ->
     {ok, IP} = find_ip(Packet),
-    UDP = UDP0#udp{ulen = 8 + byte_size(Binary)},
-    UDPBinary = udp(UDP#udp{sum = makesum([IP, UDP, Binary])}),
-    encapsulate(udp, Packet, << UDPBinary/binary, Binary/binary >>);
+    UDPBinary = pkt_udp:encapsulate(UDP, IP, Binary),
+    encapsulate(udp, Packet, UDPBinary);
 encapsulate([#sctp{} = SCTP | Packet], Binary) ->
     SCTPBinary = sctp(SCTP),
     encapsulate(sctp, Packet, << SCTPBinary/binary, Binary/binary >>);
@@ -135,7 +133,6 @@ encapsulate([{truncated, Truncated} | Packet], Binary) ->
     encapsulate(truncated, Packet, << Truncated/binary, Binary/binary >>);
 encapsulate([#ipv6{} | _] = Packet, Binary) ->
     encapsulate(ipv6_hdr_no_next, Packet, Binary).
-
 
 -spec encapsulate(ether_type() | proto(), packet(), binary()) -> binary().
 encapsulate(_, [], Binary) ->
@@ -242,7 +239,7 @@ decapsulate({tcp, Data}, Packet) when byte_size(Data) >= ?TCPHDRLEN ->
     {Hdr, Payload} = tcp(Data),
     decapsulate(stop, [Payload, Hdr|Packet]);
 decapsulate({udp, Data}, Packet) when byte_size(Data) >= ?UDPHDRLEN ->
-    {Hdr, Payload} = udp(Data),
+    {Hdr, Payload} = pkt_udp:decapsulate(Data),
     decapsulate(stop, [Payload, Hdr|Packet]);
 decapsulate({sctp, Data}, Packet) when byte_size(Data) >= 12 ->
     Hdr = sctp(Data),
@@ -695,15 +692,6 @@ sctp_chunk_payload(_, Data) ->
     Data.
 
 %%
-%% UDP
-%%
-udp(<<SPort:16, DPort:16, ULen:16, Sum:16, Payload/binary>>) ->
-    {#udp{sport = SPort, dport = DPort, ulen = ULen, sum = Sum}, Payload};
-udp(#udp{sport = SPort, dport = DPort, ulen = ULen, sum = Sum}) ->
-    <<SPort:16, DPort:16, ULen:16, Sum:16>>.
-
-
-%%
 %% ICMP
 %%
 
@@ -889,36 +877,6 @@ checksum(#ipv6{saddr = SAddr,
                Len:32,
                0:24, ?IPPROTO_TCP:8,
                TCP/binary,
-               Payload/bits,
-               0:Pad>>);
-
-checksum(#ipv4{saddr = SAddr,
-               daddr = DAddr},
-         #udp{ulen = Len} = Hdr,
-         Payload) ->
-    UDP = udp(Hdr#udp{sum = 0}),
-    Pad = bit_size(Payload) rem 16,
-    checksum(<<SAddr:32/bits,
-               DAddr:32/bits,
-               0:8,
-               ?IPPROTO_UDP:8,
-               Len:16,
-               UDP/binary,
-               Payload/bits,
-               0:Pad>>);
-
-checksum(#ipv6{saddr = SAddr,
-               daddr = DAddr},
-         #udp{ulen = Len} = Hdr,
-         Payload) ->
-    UDP = udp(Hdr#udp{sum = 0}),
-    Pad = bit_size(Payload) rem 16,
-    checksum(<<SAddr:128/bits,
-               DAddr:128/bits,
-               Len:32,
-               0:24,
-               ?IPPROTO_UDP:8,
-               UDP/binary,
                Payload/bits,
                0:Pad>>);
 
