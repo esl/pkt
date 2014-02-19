@@ -55,7 +55,6 @@
          ipv6/1,
          ipv6_header/2,
          proto/1,
-         tcp/1,
          dlt/1
         ]).
 
@@ -102,8 +101,8 @@ encapsulate([Payload | Packet], <<>>) when is_binary(Payload) ->
     encapsulate(Packet, << Payload/binary >>);
 encapsulate([#tcp{} = TCP | Packet], Binary) ->
     {ok, IP} = find_ip(Packet),
-    TCPBinary = tcp(TCP#tcp{sum = makesum([IP, TCP, Binary])}),
-    encapsulate(tcp, Packet, << TCPBinary/binary, Binary/binary >>);
+    TCPBinary = pkt_tcp:encapsulate(IP, TCP, Binary),
+    encapsulate(tcp, Packet, TCPBinary);
 encapsulate([#udp{} = UDP | Packet], Binary) ->
     {ok, IP} = find_ip(Packet),
     UDPBinary = pkt_udp:encapsulate(UDP, IP, Binary),
@@ -236,7 +235,7 @@ decapsulate({gre, Data}, Packet) when byte_size(Data) >= ?GREHDRLEN ->
     decapsulate({ether_type(Hdr#gre.type), Payload}, [Hdr|Packet]);
 
 decapsulate({tcp, Data}, Packet) when byte_size(Data) >= ?TCPHDRLEN ->
-    {Hdr, Payload} = tcp(Data),
+    {Hdr, Payload} = pkt_tcp:decapsulate(Data),
     decapsulate(stop, [Payload, Hdr|Packet]);
 decapsulate({udp, Data}, Packet) when byte_size(Data) >= ?UDPHDRLEN ->
     {Hdr, Payload} = pkt_udp:decapsulate(Data),
@@ -549,6 +548,11 @@ ipv4(#ipv4{
       Off:13, TTL:8, P:8, Sum:16,
       SAddr:32/bits, DAddr:32/bits, Opt/binary>>.
 
+options(Offset, Payload) ->
+    N = (Offset-5)*4,
+    <<Opt:N/binary, Payload1/binary>> = Payload,
+    {Opt, Payload1}.
+
 
 %%
 %% IPv6
@@ -610,44 +614,44 @@ gre(#gre{c = 1, res0 = Res0, ver = Ver, type = Type,
 %%
 %% TCP
 %%
-tcp(
-  <<SPort:16, DPort:16,
-    SeqNo:32,
-    AckNo:32,
-    Off:4, 0:4, CWR:1, ECE:1, URG:1, ACK:1,
-    PSH:1, RST:1, SYN:1, FIN:1, Win:16,
-    Sum:16, Urp:16,
-    Rest/binary>>
- ) when Off >= 5 ->
-    {Opt, Payload} = options(Off, Rest),
-    {#tcp{
-        sport = SPort, dport = DPort,
-        seqno = SeqNo,
-        ackno = AckNo,
-        off = Off, cwr = CWR, ece = ECE, urg = URG, ack = ACK,
-        psh = PSH, rst = RST, syn = SYN, fin = FIN, win = Win,
-        sum = Sum, urp = Urp,
-        opt = Opt
-       }, Payload};
-tcp(#tcp{
-       sport = SPort, dport = DPort,
-       seqno = SeqNo,
-       ackno = AckNo,
-       off = Off, cwr = CWR, ece = ECE, urg = URG, ack = ACK,
-       psh = PSH, rst = RST, syn = SYN, fin = FIN, win = Win,
-       sum = Sum, urp = Urp, opt = Opt
-      }) ->
-    <<SPort:16, DPort:16,
-      SeqNo:32,
-      AckNo:32,
-      Off:4, 0:4, CWR:1, ECE:1, URG:1, ACK:1,
-      PSH:1, RST:1, SYN:1, FIN:1, Win:16,
-      Sum:16, Urp:16, Opt/binary >>.
+%% tcp(
+%%   <<SPort:16, DPort:16,
+%%     SeqNo:32,
+%%     AckNo:32,
+%%     Off:4, 0:4, CWR:1, ECE:1, URG:1, ACK:1,
+%%     PSH:1, RST:1, SYN:1, FIN:1, Win:16,
+%%     Sum:16, Urp:16,
+%%     Rest/binary>>
+%%  ) when Off >= 5 ->
+%%     {Opt, Payload} = options(Off, Rest),
+%%     {#tcp{
+%%         sport = SPort, dport = DPort,
+%%         seqno = SeqNo,
+%%         ackno = AckNo,
+%%         off = Off, cwr = CWR, ece = ECE, urg = URG, ack = ACK,
+%%         psh = PSH, rst = RST, syn = SYN, fin = FIN, win = Win,
+%%         sum = Sum, urp = Urp,
+%%         opt = Opt
+%%        }, Payload};
+%% tcp(#tcp{
+%%        sport = SPort, dport = DPort,
+%%        seqno = SeqNo,
+%%        ackno = AckNo,
+%%        off = Off, cwr = CWR, ece = ECE, urg = URG, ack = ACK,
+%%        psh = PSH, rst = RST, syn = SYN, fin = FIN, win = Win,
+%%        sum = Sum, urp = Urp, opt = Opt
+%%       }) ->
+%%     <<SPort:16, DPort:16,
+%%       SeqNo:32,
+%%       AckNo:32,
+%%       Off:4, 0:4, CWR:1, ECE:1, URG:1, ACK:1,
+%%       PSH:1, RST:1, SYN:1, FIN:1, Win:16,
+%%       Sum:16, Urp:16, Opt/binary >>.
 
-options(Offset, Payload) ->
-    N = (Offset-5)*4,
-    <<Opt:N/binary, Payload1/binary>> = Payload,
-    {Opt, Payload1}.
+%% options(Offset, Payload) ->
+%%     N = (Offset-5)*4,
+%%     <<Opt:N/binary, Payload1/binary>> = Payload,
+%%     {Opt, Payload1}.xs
 
 %%
 %% SCTP
@@ -849,36 +853,6 @@ ndp_addr(Type, Value) ->
 %%
 %% Utility functions
 %%
-
-checksum(#ipv4{saddr = SAddr,
-               daddr = DAddr},
-         #tcp{} = TCPhdr,
-         Payload) ->
-    TCP = tcp(TCPhdr#tcp{sum = 0}),
-    Len = size(TCP) + size(Payload),
-    Pad = 8 * (Len rem 2),
-    checksum(<<SAddr:32/bits,
-               DAddr:32/bits,
-               0:8, ?IPPROTO_TCP:8,
-               Len:16,
-               TCP/binary,
-               Payload/bits,
-               0:Pad>>);
-
-checksum(#ipv6{saddr = SAddr,
-               daddr = DAddr},
-         #tcp{} = TCPhdr,
-         Payload) ->
-    TCP = tcp(TCPhdr#tcp{sum = 0}),
-    Len = size(TCP) + size(Payload),
-    Pad = 8 * (Len rem 2),
-    checksum(<<SAddr:128/bits,
-               DAddr:128/bits,
-               Len:32,
-               0:24, ?IPPROTO_TCP:8,
-               TCP/binary,
-               Payload/bits,
-               0:Pad>>);
 
 checksum(#ipv6{saddr = SAddr,
                daddr = DAddr},
