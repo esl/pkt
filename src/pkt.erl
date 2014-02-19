@@ -80,12 +80,16 @@
                   #ndp_na{} |
                   {unsupported, binary()} |
                   {truncated, binary()}.
+-type transport_header() :: #tcp{} | #udp{} | #sctp{}.
+-type internet_header() :: #ipv4{} | #ipv6{}.
 %% Packet should be a list of headers with
 %% optional binary payload as a last element.
 -type packet() :: [header() | binary()].
 
 -export_type([
-              packet/0
+              packet/0,
+              transport_header/0,
+              internet_header/0
              ]).
 
 %%% Encapsulate ----------------------------------------------------------------

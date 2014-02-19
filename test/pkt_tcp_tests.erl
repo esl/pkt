@@ -27,32 +27,8 @@ test_checksum(Headers) ->
          TCPBin = pkt_tcp:encapsulate(IP, TCP, Payload),
 
          %% THEN
-         Checksum = compute_tcp_checksum(IP, TCPBin),
-         ?assert(is_pdu_checksum_valid(Checksum))
+         Checksum = pkt_checksum_test_utils:compute_transport_layer_checksum(
+                      IP, TCPBin),
+         ?assert(pkt_checksum_test_utils:is_internet_checksum_valid(Checksum))
 
      end || _ <- lists:seq(1, ?TEST_REPETITIONS)].
-
-%% Helper functions -------------------------------------------------------------
-
-compute_tcp_checksum(IP, TCPBin) ->
-    TCPWithPseudoHdr = construct_tcp_data_with_pseudo_header(IP, TCPBin),
-    PaddedTCPWithPseudoHdr = pkt_utils:add_padding_if_odd_length(
-                               <<TCPWithPseudoHdr/binary>>),
-    pkt_checksum:compute_internet_checksum(PaddedTCPWithPseudoHdr).
-
-construct_tcp_data_with_pseudo_header(#ipv4{saddr = SrcAddr, daddr = DstAddr},
-                                      TCPBin) ->
-    TCPLength = compute_tcp_length(TCPBin),
-    <<SrcAddr/binary, DstAddr/binary, 0, ?IPPROTO_TCP, TCPLength:16,
-      TCPBin/binary>>;
-construct_tcp_data_with_pseudo_header(#ipv6{saddr = SrcAddr, daddr = DstAddr},
-                                      TCPBin) ->
-    TCPLength = compute_tcp_length(TCPBin),
-    <<SrcAddr/binary, DstAddr/binary, TCPLength:32, 0:24, ?IPPROTO_TCP,
-      TCPBin/binary>>.
-
-is_pdu_checksum_valid(0) -> true;
-is_pdu_checksum_valid(_) -> false.
-
-compute_tcp_length(TCP) ->
-    byte_size(TCP).
