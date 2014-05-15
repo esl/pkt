@@ -109,7 +109,7 @@ encapsulate([Payload | Packet], <<>>) when is_binary(Payload) ->
     encapsulate(Packet, << Payload/binary >>);
 encapsulate([#tcp{} = TCP | Packet], Binary) ->
     {ok, IP} = find_ip(Packet),
-    TCPBinary = pkt_tcp:encapsulate(IP, TCP, Binary),
+    TCPBinary = pkt_tcp:encapsulate(TCP, IP, Binary),
     encapsulate(tcp, Packet, TCPBinary);
 encapsulate([#udp{} = UDP | Packet], Binary) ->
     {ok, IP} = find_ip(Packet),

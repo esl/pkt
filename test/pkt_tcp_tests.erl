@@ -24,7 +24,7 @@ test_checksum(Headers) ->
                                 Headers),
 
          %% WHEN
-         TCPBin = pkt_tcp:encapsulate(IP, TCP, Payload),
+         TCPBin = pkt_tcp:encapsulate(TCP, IP, Payload),
 
          %% THEN
          Checksum = pkt_checksum_test_utils:compute_transport_layer_checksum(

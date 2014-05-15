@@ -6,9 +6,9 @@
 
 %%% API -------------------------------------------------------------------------
 
--spec encapsulate(pkt:internet_header(), pkt:tcp(), TCPPayload :: binary())
+-spec encapsulate(pkt:tcp(), pkt:internet_header(), TCPPayload :: binary())
                  -> TCPBinary :: binary().
-encapsulate(IP, TCP, Payload) ->
+encapsulate(TCP, IP, Payload) ->
     UntilChecksum = construct_tcp_binary_until_checksum(TCP),
     BehindChecksum = construct_tcp_binary_behind_checksum(TCP, Payload),
     Length = calculate_tcp_length(TCP, Payload),
