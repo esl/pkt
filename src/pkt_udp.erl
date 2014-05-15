@@ -6,10 +6,13 @@
 
 %%% API -------------------------------------------------------------------------
 
+-spec encapsulate(pkt:udp(), pkt:internet_header(), UDPPayload :: binary())
+                 -> UDPBinary :: binary().
 encapsulate(UDP, IP, Payload) ->
     UDPWithLenght = fill_length(UDP, Payload),
     construct_binary(UDPWithLenght, IP, Payload).
 
+-spec decapsulate(UDPBinary :: binary()) -> {pkt:udp(), UDPPayload :: binary()}.
 decapsulate(<<SrcPort:16, DstPort:16, DatagramLength:16, Checksum:16,
               Payload/binary>>) ->
     {#udp{sport = SrcPort, dport = DstPort, ulen = DatagramLength,

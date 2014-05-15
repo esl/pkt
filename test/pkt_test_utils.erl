@@ -2,8 +2,10 @@
 
 -include("pkt.hrl").
 
--export([generate_packet_model/0, generate_partial_packet_model/1,
-         restore_computed_fields/1, generate_binary_payload/1]).
+-export([generate_packet_model/0,
+         generate_partial_packet_model/1,
+         restore_computed_fields/1,
+         generate_binary_payload/1]).
 
 -define(TRANSPORT_LAYER_PDU_MAX_SIZE, 65535).
 -define(TRANSPORT_LAYER_HEADERS, [tcp, udp, sctp, none]).
@@ -35,10 +37,15 @@ generate_packet_model() ->
 %% @doc Generate payload and add specific TCP/IP model
 %% headers.
 generate_partial_packet_model(udp_ipv4) ->
-    [#ipv4{}, #udp{}, generate_packet_payload()];
+    [#ipv4{p = ?IPPROTO_UDP}, #udp{}, generate_packet_payload()];
 generate_partial_packet_model(udp_ipv6) ->
-    [#ipv6{saddr = <<0:112, 1:16>>, daddr = <<0:112, 1:16>>},
-     #udp{}, generate_packet_payload()].
+    [#ipv6{saddr = <<0:112, 1:16>>, daddr = <<0:112, 1:16>>, next = ?IPPROTO_UDP},
+     #udp{}, generate_packet_payload()];
+generate_partial_packet_model(tcp_ipv4) ->
+    [#ipv4{p = ?IPPROTO_TCP}, #tcp{}, generate_packet_payload()];
+generate_partial_packet_model(tcp_ipv6) ->
+    [#ipv6{saddr = <<0:112, 1:16>>, daddr = <<0:112, 1:16>>, next = ?IPPROTO_TCP},
+     #tcp{}, generate_packet_payload()].
 
 %% @doc Restores fields that are computed during packet encapsulation to
 %% their default values.
